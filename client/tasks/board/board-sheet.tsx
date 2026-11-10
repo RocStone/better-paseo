@@ -1,4 +1,5 @@
 import React, { forwardRef, useEffect, useImperativeHandle, useMemo, useRef, useState } from "react";
+import { openMark } from "../../debug/open-trace";
 import { Animated, PanResponder, Platform, Pressable, View, type GestureResponderEvent } from "react-native";
 import type { PluginTheme } from "@getpaseo/plugin";
 import { useReducedMotion } from "../../ui/use-reduced-motion";
@@ -55,6 +56,7 @@ export const BoardSheet = forwardRef<BoardSheetHandle, {
   labels: { grow: string; shrink: string };
   children: React.ReactNode;
 }>(function BoardSheet(props, ref) {
+  openMark("sheet:render");
   const reduced = useReducedMotion();
   const [present, setPresent] = useState(props.open);
   const content = useRef(props.children);
@@ -123,6 +125,7 @@ export const BoardSheet = forwardRef<BoardSheetHandle, {
       }
       const run = Animated.timing(slide, { toValue: to, duration, easing: MOTION.ease, useNativeDriver: native() });
       slideRun.current = run;
+      openMark(`sheet:slide-start:${to}`);
       run.start(({ finished }) => {
         if (slideRun.current !== run) return;
         slideRun.current = null;
@@ -138,6 +141,7 @@ export const BoardSheet = forwardRef<BoardSheetHandle, {
      */
     slideInAfterMount(done: () => void) {
       motionNow.unwait();
+      openMark("sheet:wait-frames");
       slideWait.current = afterFrames(() => {
         slideWait.current = null;
         motionNow.slideTo(0, 280, done);
@@ -201,6 +205,7 @@ export const BoardSheet = forwardRef<BoardSheetHandle, {
         setHidden(target);
       }
       const done = () => {
+        openMark("sheet:in");
         phase.current = "in";
         latest.current.onShown?.(true);
       };

@@ -41,6 +41,7 @@
  * card that moved out of view fades where it was while the cards below close
  * the gap.
  */
+import { openMark } from "../../debug/open-trace";
 import React, { createContext, memo, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
 import { Animated, Platform, View } from "react-native";
 import { LANE_ORDER, type LaneId, type LaneModel, type TaskCard } from "../model";
@@ -615,6 +616,7 @@ const noSubscribe = () => () => {};
  * own rect is the ghosts' origin; nothing in it takes a touch.
  */
 export function LaneMotionLayer(props: { store: LaneMotionStore; renderCard(card: TaskCard): ReactNode }) {
+  openMark("motionlayer");
   const { store } = props;
   const ghosts = useSyncExternalStore(store.subscribe, store.ghosts, store.ghosts);
   const ref = useRef<View>(null);

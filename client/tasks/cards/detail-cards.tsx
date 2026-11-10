@@ -1,4 +1,5 @@
 import React, { useCallback, useMemo, useEffect, useReducer, useRef, useState } from "react";
+import { openMark } from "../../debug/open-trace";
 import { createDetailChrome, useDetailChrome, type DetailChrome, type DetailChromeState } from "./detail-chrome";
 import { Animated, Platform, Pressable, ScrollView, StyleSheet, View, useWindowDimensions, type LayoutChangeEvent, type TextStyle, type ViewStyle } from "react-native";
 import type { PluginTheme } from "@getpaseo/plugin";
@@ -228,6 +229,7 @@ const MINUTE = 60_000;
 
 /** The details card: the header and the lead block, then the sections. */
 export function TaskDetailCards(given: TaskDetailCardsProps) {
+  openMark("details:render");
   // An archived task has no Open, here or on its subtasks: Paseo would show another tab.
   const opened = opensInPaseo(given.card) ? given : { ...given, onOpen: undefined };
   // A person's only message is the first prompt, which its own section shows.
@@ -486,6 +488,7 @@ function DetailTabBar(props: { chrome: DetailChrome; scrollHeader: boolean; toke
 
 /** A sticky-tab page: at least the scroller's height under the tabs, so switching pages does not jump. */
 function DetailTabPage(props: { id: "info" | "messages"; chrome: DetailChrome; active: boolean; touch: boolean; onLayout(): void; children: React.ReactNode }) {
+  openMark(`c:page:${props.id}`);
   const least = useDetailChrome(props.chrome, leastPageOf);
   return (
     <View
@@ -502,6 +505,7 @@ function DetailTabPage(props: { id: "info" | "messages"; chrome: DetailChrome; a
 /** The card's action bar, casting its edge while content runs under it. */
 export function EdgeActionBar(props: React.ComponentProps<typeof DetailActionBar> & { chrome: DetailChrome; scrollHeader: boolean }) {
   const { chrome, scrollHeader, ...bar } = props;
+  openMark("c:edgebar");
   const under = useDetailChrome(chrome, scrollHeader ? headerUnderBarOf : bodyUnderBarOf);
   return <DetailActionBar {...bar} contentUnder={under} />;
 }
@@ -605,6 +609,7 @@ function DetailStatusRow(props: Inner & { fixed?: boolean }) {
 }
 
 function DetailHeader(props: Inner & { hideStatus?: boolean }) {
+  openMark("c:header");
   const { card, m, tokens, touch = false } = props;
   const titleUpdate = useTitleUpdateState(props.titleUpdates, card.id);
   const streamedTitle = titleUpdate.state === "running" ? titleUpdate.text?.replace(/\s+/g, " ").trim() : undefined;
@@ -1052,6 +1057,7 @@ function ErrorBlock(props: Inner) {
 
 function Section(props: Inner & { section: DetailSection; closed: boolean; divider: boolean; onToggleSection(closed: boolean): void }) {
   const { card, m, tokens, section, gutter = 0 } = props;
+  openMark(`c:section:${section}`);
   const words = cardStrings(props.language).details;
   const reducedMotion = useReducedMotion();
   const { copied, copy } = useCopy();

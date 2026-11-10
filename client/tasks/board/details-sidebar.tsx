@@ -1,4 +1,5 @@
 import React, { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { openMark } from "../../debug/open-trace";
 import { Platform, Pressable, ScrollView, StyleSheet, View } from "react-native";
 import type { PluginTheme } from "@getpaseo/plugin";
 import { Icon, TextInput } from "@getpaseo/plugin/client/react-native";
@@ -97,6 +98,8 @@ function detailActions(board: BoardController, card: TaskCard) {
 
 function DetailsSidebarView(props: DetailsSidebarProps) {
   const { board, theme, selection, dispatch } = props;
+  openMark("sidebar:render");
+  React.useLayoutEffect(() => openMark("sidebar:commit"));
   const tokens = taskTokens(theme);
   // Pixel-by-pixel resizes only change the browser's layout, not this subtree.
   const [layout, setLayout] = useState({ short: false, wide: false });
@@ -169,6 +172,7 @@ function DetailsSidebarView(props: DetailsSidebarProps) {
     const height = Math.round(event.nativeEvent.layout.height);
     const short = height > 0 && height < SHORT_COLUMN;
     const wide = Math.round(event.nativeEvent.layout.width) >= SHEET_COLUMNS;
+    openMark(`sidebar:onLayout:${short}/${wide}/${usedNow.current}`);
     measured.current = { short, wide };
     if (usedNow.current) setLayout((was) => was.short === short && was.wide === wide ? was : { short, wide });
   };
@@ -229,6 +233,7 @@ const SidebarDetails = memo(SidebarDetailsView, (last: SidebarDetailsProps, next
 
 function SidebarDetailsView(props: SidebarDetailsProps) {
   const { board, card, dispatch } = props;
+  openMark("pane:render");
   const strings = board.strings.sidebar;
   const notice: DetailNotice | null = props.shown
     ? null

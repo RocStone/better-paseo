@@ -1,4 +1,5 @@
 import React, { useEffect, useLayoutEffect, useRef, useState, type RefObject } from "react";
+import { openMark } from "../../debug/open-trace";
 import { Platform, StyleSheet, View, type ViewProps, type ViewStyle } from "react-native";
 import type { PluginTheme } from "@getpaseo/plugin";
 import { TaskText as Text, HOST_LINE, HOST_FONT as F, TASK_MONO } from "../typography";
@@ -118,6 +119,7 @@ export function CardHints(props: { root: RefObject<View | null>; texts: RefObjec
  * it last in the board, with the board's root, so a tip paints over the lanes.
  */
 export function BoardTips(props: { root: RefObject<View | null>; theme: PluginTheme; color: string }) {
+  openMark("tips");
   return (
     <HintLayer
       root={props.root}

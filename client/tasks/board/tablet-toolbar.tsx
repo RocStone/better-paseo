@@ -1,4 +1,5 @@
 import React, { useState, type ReactNode, type Ref } from "react";
+import { openMark } from "../../debug/open-trace";
 import { Pressable, View, type LayoutRectangle, type TextInput as NativeTextInput } from "react-native";
 import { Icon } from "@getpaseo/plugin/client/react-native";
 import type { PluginTheme } from "@getpaseo/plugin";
@@ -38,6 +39,7 @@ export function TabletToolbar(props: {
   sidebar: { open: boolean; sheet: boolean; onToggle(): void };
   emptyLanes: { collapsed: boolean; disabled: boolean; onToggle(): void };
 }) {
+  openMark("toolbar");
   const { board, theme } = props;
   const colors = theme.colors;
   const strings = board.strings;
