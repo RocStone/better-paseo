@@ -184,6 +184,7 @@ export const BoardSheet = forwardRef<BoardSheetHandle, {
       setHidden(target);
       slide.setValue(reduced ? 0 : full - target);
       phase.current = "entering";
+      openMark("sheet:setPresent");
       setPresent(true);
       return;
     }

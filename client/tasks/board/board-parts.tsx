@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
+import { openMark } from "../../debug/open-trace";
 import { Animated, Platform, Pressable, View, type StyleProp, type TextStyle, type ViewStyle } from "react-native";
 import { Icon } from "@getpaseo/plugin/client/react-native";
 import type { PluginTheme } from "@getpaseo/plugin";
@@ -406,6 +407,7 @@ export interface CardCellProps {
  * memo skips the cards a board update does not change.
  */
 export function CardCell(props: CardCellProps) {
+  openMark("cell");
   const { card, board, register } = props;
   const todo = useTodoSummary(board.paseo, card.id, board.visible && !card.subagent && !card.closed && board.fields.plan, !props.copy);
   const searchPrompt = useSyncExternalStore(

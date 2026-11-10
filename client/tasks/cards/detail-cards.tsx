@@ -308,6 +308,7 @@ export function TaskDetailCards(given: TaskDetailCardsProps) {
     const next = { ...headerEdge.current, ...patch };
     headerEdge.current = next;
     const under = contentUnderBar(next);
+    openMark(`c:set-headerUnder:${under}`);
     setHeaderUnderBar((current) => (current === under ? current : under));
   };
   // Sticky tabs cast this once they pin. Fixed tabs cast it once their page has scrolled under them.
@@ -315,6 +316,7 @@ export function TaskDetailCards(given: TaskDetailCardsProps) {
   const underBar = props.tabs === true && (props.scrollHeader ? headerUnderBar : bodyUnderBar);
   // A sheet changing height resizes the scroller on every frame: its viewport (a page's least height) follows once it stands still.
   const noteViewport = useAfterSheetMotion((viewport: number) => {
+    openMark(`c:set-viewport:${viewport}`);
     setTabLayout((current) => current.viewport === viewport ? current : { ...current, viewport });
     noteHeaderEdge({ viewport });
   });
@@ -334,6 +336,7 @@ export function TaskDetailCards(given: TaskDetailCardsProps) {
       // Sticky headers replace their direct child's style; keep the row one level inside.
       <View testID="detail-tab-anchor" style={tabShadow && !props.scrollHeader ? { position: "relative", zIndex: 1 } : undefined} onLayout={props.scrollHeader ? (event) => {
         const { y, height } = event.nativeEvent.layout;
+        openMark(`c:set-tabtop:${y}/${height}`);
         setTabLayout((current) => current.top === y && current.height === height ? current : { ...current, top: y, height });
       } : undefined}>
         <View accessibilityRole="tablist" testID="detail-tabs" style={{ flexDirection: "row", paddingHorizontal: 10, paddingTop: props.scrollHeader ? 8 : 0, paddingBottom: 8, gap: 6, backgroundColor: tokens.card.background, boxShadow: tabShadow }}>
