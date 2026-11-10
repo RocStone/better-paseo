@@ -840,6 +840,7 @@ function StatusSub(props: Inner & { small: number }) {
 
 /** The running turn: its clock (ticking each second), the session's tokens so far and the context ring. */
 function RunningTurn(props: Inner) {
+  openMark("c:runningturn");
   const { card } = props;
   const timer = useTime(props.time, (time) => {
     const ran = since(card.timing.turnStartedAt, time);
@@ -1792,6 +1793,7 @@ function FoldedText(props: {
   onToggle(): void;
   children: React.ReactNode;
 }) {
+  openMark("c:folded");
   const reduced = useReducedMotion();
   const words = cardStrings(props.language).details;
   const [height, setHeight] = useState<number | null>(null);

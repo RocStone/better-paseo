@@ -29,5 +29,5 @@ export function openTap(send: (data: Record<string, unknown>) => void): void {
     armed = false;
     const rel = (t: number) => Math.round((t - t0) * 10) / 10;
     send({ t0, marks: marks.map(([name, t]) => [name, rel(t)]), frames: frames.map(rel) });
-  }, 2500);
+  }, 9000);
 }
