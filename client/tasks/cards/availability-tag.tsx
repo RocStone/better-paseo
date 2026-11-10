@@ -1,4 +1,5 @@
 import React, { useEffect, useRef, useState } from "react";
+import { openMark } from "../../debug/open-trace";
 import { Platform, Pressable, View, type ViewStyle } from "react-native";
 import { Icon } from "@getpaseo/plugin/client/react-native";
 import type { PluginTheme } from "@getpaseo/plugin";
@@ -36,6 +37,7 @@ export function taskIssueText(issue: TaskIssue, language: TasksLanguage): string
  * Hover and focus float it as a tip; a press opens it inline, flat, in the flow.
  */
 export function AvailabilityTag(props: { issue: TaskIssue | null | undefined; language: TasksLanguage; tokens: TaskTokens; theme: PluginTheme; compact?: boolean }) {
+  openMark("h:avail");
   const [expanded, setExpanded] = useState(false);
   const [focused, setFocused] = useState(false);
   const { hovered, hoverProps } = useHover();

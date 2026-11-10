@@ -1,4 +1,5 @@
 import React, { useEffect, useRef, useState } from "react";
+import { openMark } from "../../debug/open-trace";
 import { Animated, Platform, Pressable, View } from "react-native";
 import { Icon, useToast } from "@getpaseo/plugin/client/react-native";
 import { useTitleUndoState, type TitleUpdateControl } from "../actions/title-update";
@@ -12,6 +13,7 @@ import { cardStrings } from "./strings";
 import type { TaskTokens } from "./tokens";
 
 export function TitleUndo(props: { agentId: string; control?: TitleUpdateControl; tokens: TaskTokens; language: TasksLanguage; touch: boolean; fadeColor?: string; fadeHeight?: number }) {
+  openMark("h:undo");
   const item = useTitleUndoState(props.control, props.agentId);
   const visible = item?.ready === true;
   const reduced = useReducedMotion();

@@ -1,4 +1,5 @@
 import React from "react";
+import { openMark } from "../../debug/open-trace";
 import { View } from "react-native";
 import { normalizeProvider, ProviderLogo, providerBrand } from "../../components/provider-logo";
 import { mix } from "../../components/theme-tokens";
@@ -64,6 +65,7 @@ export function brandTint(provider: string): string | null {
  * every mark is a silhouette in that one colour.
  */
 export function BrandMark(props: { provider: string; size: number; tokens: TaskTokens; mono?: string }) {
+  openMark("h:brand");
   if (props.mono) return <ProviderLogo provider={props.provider} size={props.size} color={props.mono} />;
   if (multicolour(props.provider)) return <PiMark size={props.size} />;
   const brand = providerBrand(props.provider);

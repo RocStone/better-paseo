@@ -586,6 +586,7 @@ function stopLabel(props: TaskDetailCardsProps): string | null {
 
 /** The header: status, title, the agent's chips and labels, the actions, then the block the card needs first. */
 function DetailStatusRow(props: Inner & { fixed?: boolean }) {
+  openMark("h:statusrow");
   const { card, m, tokens, touch = false } = props;
   const scale = useTasksFontScale();
   const controls = touch ? TASK_TOOLBAR_METRICS.touch : TASK_TOOLBAR_METRICS.desktop;
@@ -860,6 +861,7 @@ function DetailHeader(props: Inner & { hideStatus?: boolean }) {
 
 /** Beside the status: the running turn's clock, else the card's timer ("等待 3m", "8m · 12 分钟前"). */
 function StatusSub(props: Inner & { small: number }) {
+  openMark("h:statussub");
   const { card, tokens } = props;
   const running = turnRunning(card) && card.timing.turnStartedAt !== null;
   const text = useTime(props.time, (time) => {
@@ -877,6 +879,7 @@ function StatusSub(props: Inner & { small: number }) {
 
 /** The running turn: its clock (ticking each second), the session's tokens so far and the context ring. */
 function RunningTurn(props: Inner) {
+  openMark("h:runningturn");
   const { card } = props;
   const timer = useTime(props.time, (time) => {
     const ran = since(card.timing.turnStartedAt, time);
@@ -1826,6 +1829,7 @@ function FoldedText(props: {
   onToggle(): void;
   children: React.ReactNode;
 }) {
+  openMark("h:folded");
   const reduced = useReducedMotion();
   const words = cardStrings(props.language).details;
   const [height, setHeight] = useState<number | null>(null);

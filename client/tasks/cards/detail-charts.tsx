@@ -1,4 +1,5 @@
 import React, { useEffect, useState } from "react";
+import { openMark } from "../../debug/open-trace";
 import { Pressable, StyleSheet, View, type LayoutChangeEvent, type TextStyle, type ViewStyle } from "react-native";
 import type { PluginTheme } from "@getpaseo/plugin";
 import { Icon } from "@getpaseo/plugin/client/react-native";
@@ -183,6 +184,7 @@ function monoFigures(text: string) {
  */
 /** `timerOnly`: a provider subagent's run, which has no turns or context of its own to report. */
 export function TurnHero(props: { timer: string; lastTurn: string | null; total: { value: string; sub: string } | null; context: ContextView | null; tokens: TaskTokens; theme: PluginTheme; touch: boolean; language: TasksLanguage; timerOnly?: boolean }) {
+  openMark("h:turnhero");
   const { tokens, context } = props;
   const colors = detailColors(tokens);
   const words = cardStrings(props.language).details;
@@ -487,6 +489,7 @@ export function TimelineChart(props: { timeline: Timeline; liveColor: string; to
  * price does not ellipsize. Until a width arrives the short row is used.
  */
 export function SummaryTiles(props: { tiles: SummaryReadout[]; tokens: TaskTokens; touch: boolean }) {
+  openMark("h:tiles");
   const { tokens } = props;
   const colors = detailColors(tokens);
   const [width, onLayout] = useWidth();
@@ -556,6 +559,7 @@ export function SummaryTiles(props: { tiles: SummaryReadout[]; tokens: TaskToken
 
 /** A hairline-outlined pill: a lead (dot, icon, mark) and its text. */
 export function Chip(props: { tokens: TaskTokens; lead?: React.ReactNode; text: string; tip: string; renderText?(text: string): React.ReactNode; muted?: boolean; compact?: boolean; height: number; font: number; testID?: string }) {
+  openMark("h:chip");
   // Grows with the text size like the card's other controls, so larger text stays inside the pill.
   const height = taskControlHeight(props.height, useTasksFontScale());
   const { hovered, hoverProps } = useHover();
