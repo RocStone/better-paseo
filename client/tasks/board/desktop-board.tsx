@@ -53,6 +53,9 @@ import { sortsLoadedOnly } from "./sort";
 import { findCard, type BoardController, type BoardLayoutHandlers } from "./use-board";
 import { focusedTaskCardId, focusTaskBoard } from "../../web";
 import { tasksSettingsOpener } from "./enabled";
+import { useRpc } from "@getpaseo/plugin/client";
+import { perfDumpRpc } from "../../../shared/perf-rpc";
+import { openMark, openTap } from "../../debug/open-trace";
 
 const nativeDriver = Platform.OS !== "web";
 
@@ -133,6 +136,12 @@ export function DesktopBoard(props: {
   handlers: RefObject<BoardLayoutHandlers | null>;
 }) {
   const { screen, rootRef } = props;
+  openMark("board:render");
+  useLayoutEffect(() => openMark("board:commit"));
+  useEffect(() => openMark("board:effect"));
+  const dumpOpen = useRpc(perfDumpRpc);
+  const dumpOpenRef = useRef(dumpOpen);
+  dumpOpenRef.current = dumpOpen;
   const [filtersOpen, setFiltersOpen] = useState(false);
   // The controls (toolbar, filter bar, filter panel) follow the board at once.
   // While the filter panel is open, the lanes, their motion and the sidebar
@@ -433,6 +442,7 @@ export function DesktopBoard(props: {
   // Selecting a card brings a put-away sidebar up for the moment.
   const showCard = useCallback(
     (card: TaskCard, preview = false) => {
+      openTap((data) => { void Promise.resolve(dumpOpenRef.current({ label: `open-${latest.current.inSheet || sheetModeRef.current ? "sheet" : "float"}`, platform: Platform.OS, data })).catch(() => undefined); });
       if (!preview) setFocus(null);
       dispatch({ type: "click", id: card.id });
       const now = latest.current;
@@ -1292,6 +1302,7 @@ function FloatingSidebar(props: {
     });
   }, []);
   useEffect(() => {
+    openMark("float:effect");
     if (reduced) return;
     const animation = Animated.parallel([
       Animated.timing(x, { toValue: 0, duration: 220, easing: MOTION.ease, useNativeDriver: nativeDriver }),
@@ -1533,6 +1544,7 @@ const DesktopLane = memo(DesktopLaneView, sameLaneProps);
 
 function DesktopLaneView(props: DesktopLaneProps) {
   const { lane, board, theme } = props;
+  openMark(`lane:${lane.id}`);
   const [refreshing, setRefreshing] = useState(false);
   const scale = useTasksFontScale();
   const colors = theme.colors;
