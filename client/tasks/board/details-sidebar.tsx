@@ -116,6 +116,7 @@ function DetailsSidebarView(props: DetailsSidebarProps) {
     props.onReveal(agentId);
   };
   const { firstPrompt, humanMessage, lastMessage, sessionTokens } = useDetailReads(board, card);
+  openMark(`sidebar:reads:${firstPrompt?.prompt?.state ?? "-"}/${humanMessage?.prompt?.state ?? "-"}/${(lastMessage as { prompt?: { state?: string } } | null)?.prompt?.state ?? "-"}/${sessionTokens ? "t" : "-"}`);
   const stopAvailable = !!board.callbacks.onStop && !!card && (card.stoppable || activeStopChildren(card).length > 0);
   const detailProps = card
     ? {
@@ -192,6 +193,7 @@ function DetailsSidebarView(props: DetailsSidebarProps) {
     const height = Math.round(event.nativeEvent.layout.height);
     const short = height > 0 && height < SHORT_COLUMN;
     const wide = Math.round(event.nativeEvent.layout.width) >= SHEET_COLUMNS;
+    openMark(`sidebar:onLayout:${short}/${wide}/${usedNow.current}`);
     measured.current = { short, wide };
     if (usedNow.current) setLayout((was) => was.short === short && was.wide === wide ? was : { short, wide });
   };

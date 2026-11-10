@@ -472,6 +472,7 @@ export function TaskDetailCards(given: TaskDetailCardsProps) {
 type ScrollEdge = { y: number; viewport: number; content: number };
 
 function PendingQuestions({ card, tokens, language }: { card: TaskCard; tokens: TaskTokens; language: TasksLanguage }) {
+  openMark("c:questions");
   const questions = card.lane === "needs_input" ? card.permission?.questions : undefined;
   if (!questions?.length) return null;
   return <View testID="detail-pending-questions" style={{ paddingHorizontal: 12, paddingVertical: 12, gap: 12 }}>
@@ -547,6 +548,7 @@ function stopLabel(props: TaskDetailCardsProps): string | null {
 
 /** The header: status, title, the agent's chips and labels, the actions, then the block the card needs first. */
 function DetailStatusRow(props: Inner & { fixed?: boolean }) {
+  openMark("c:statusrow");
   const { card, m, tokens, touch = false } = props;
   const scale = useTasksFontScale();
   const controls = touch ? TASK_TOOLBAR_METRICS.touch : TASK_TOOLBAR_METRICS.desktop;
@@ -570,6 +572,7 @@ function DetailStatusRow(props: Inner & { fixed?: boolean }) {
 }
 
 function DetailHeader(props: Inner & { hideStatus?: boolean }) {
+  openMark("c:header");
   const { card, m, tokens, touch = false } = props;
   const titleUpdate = useTitleUpdateState(props.titleUpdates, card.id);
   const streamedTitle = titleUpdate.state === "running" ? titleUpdate.text?.replace(/\s+/g, " ").trim() : undefined;
@@ -1017,6 +1020,7 @@ function ErrorBlock(props: Inner) {
 
 function Section(props: Inner & { section: DetailSection; closed: boolean; divider: boolean; onToggleSection(closed: boolean): void }) {
   const { card, m, tokens, section, gutter = 0 } = props;
+  openMark(`c:section:${section}`);
   const words = cardStrings(props.language).details;
   const reducedMotion = useReducedMotion();
   const { copied, copy } = useCopy();
@@ -1166,6 +1170,7 @@ function SectionChevron(props: { closed: boolean; color: string }) {
  * cutting off.
  */
 function Properties(props: Inner) {
+  openMark("c:properties");
   const { card, m, tokens } = props;
   const words = props.strings.property;
   const cardText = cardStrings(props.language);
@@ -1550,6 +1555,7 @@ function RowAction(props: { icon: string; label: string; tokens: TaskTokens; onP
  * first ten show; the rest open on demand, closed again on the next card.
  */
 function Subtasks(props: Inner) {
+  openMark("c:subtasks");
   const { card, m, tokens } = props;
   const scale = useTasksFontScale();
   const reducedMotion = useReducedMotion();
@@ -1676,6 +1682,7 @@ function TimelineTextBody(props: Inner & {
   flash?: boolean;
 }) {
   const { tokens, id } = props;
+  openMark(`c:text:${id}`);
   const words = cardStrings(props.language).details;
   const [open, setOpen] = useState(props.tabs === true && props.id !== "detail-prompt");
   const query = props.id === "detail-prompt" ? props.searchQuery ?? "" : "";
@@ -1902,6 +1909,7 @@ function TimelineTextSkeleton(props: { tokens: TaskTokens; id: string; line: num
 }
 
 function Usage(props: Inner) {
+  openMark("c:usage");
   const { card, m, tokens } = props;
   const words = cardStrings(props.language).details;
   const touch = props.touch === true;
@@ -1928,6 +1936,7 @@ function Usage(props: Inner) {
 }
 
 function Activity(props: Inner) {
+  openMark("c:activity");
   const line = timeline(props.card, props.now, props.language);
   if (!line) return null;
   const kind = props.card.stoppedManually ? "stopped" : props.card.status;
@@ -2100,6 +2109,7 @@ export function DetailActionBar(props: {
   /** The page still runs under this bar, so it casts the same edge the tabs do. */
   contentUnder?: boolean;
 }) {
+  openMark("c:actionbar");
   const { card } = props;
   const onOpen = opensInPaseo(card) ? props.onOpen : undefined;
   // An archived task's main button is Unarchive, in Open tab's place.
