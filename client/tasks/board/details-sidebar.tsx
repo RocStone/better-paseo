@@ -28,6 +28,7 @@ import { CardContextMenu } from "../cards/card-menu";
 import { cardStrings } from "../cards/strings";
 import { parentOpensInPaseo } from "../model";
 import { useTitleUpdateState } from "../actions/title-update";
+import { openMark } from "../../debug/open-trace";
 
 type GroupKind = "agent" | "project" | "workspace" | "label";
 const GROUP_KINDS: readonly GroupKind[] = ["agent", "project", "workspace", "label"];
@@ -91,6 +92,8 @@ function sameDetailsProps(last: DetailsSidebarProps, next: DetailsSidebarProps):
 
 function DetailsSidebarView(props: DetailsSidebarProps) {
   const { board, theme, selection, dispatch } = props;
+  openMark("sidebar:render");
+  React.useLayoutEffect(() => openMark("sidebar:commit"));
   const tokens = taskTokens(theme);
   // Pixel-by-pixel resizes only change the browser's layout, not this subtree.
   const [layout, setLayout] = useState({ short: false, wide: false });

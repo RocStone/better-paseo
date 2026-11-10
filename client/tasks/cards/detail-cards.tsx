@@ -1,4 +1,5 @@
 import React, { useCallback, useMemo, useEffect, useReducer, useRef, useState } from "react";
+import { openMark } from "../../debug/open-trace";
 import { Animated, Platform, Pressable, ScrollView, StyleSheet, View, useWindowDimensions, type LayoutChangeEvent, type TextStyle, type ViewStyle } from "react-native";
 import type { PluginTheme } from "@getpaseo/plugin";
 import { useRpc } from "@getpaseo/plugin/client";
@@ -227,6 +228,7 @@ const MINUTE = 60_000;
 
 /** The details card: the header and the lead block, then the sections. */
 export function TaskDetailCards(given: TaskDetailCardsProps) {
+  openMark("details:render");
   // An archived task has no Open, here or on its subtasks: Paseo would show another tab.
   const opened = opensInPaseo(given.card) ? given : { ...given, onOpen: undefined };
   // A person's only message is the first prompt, which its own section shows.
