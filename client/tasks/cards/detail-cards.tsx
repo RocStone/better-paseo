@@ -19,7 +19,7 @@ import { useCopy } from "../../ui/use-copy";
 import { formatFullStamp } from "../../ui/time";
 import type { TasksLanguage } from "../i18n";
 import type { SessionTokens } from "../../../shared/tasks-rpc";
-import { opensInPaseo, parentOpensInPaseo, turnRunning, type PermissionKind, type TaskCard, type TaskChild } from "../model";
+import { opensInPaseo, parentOpensInPaseo, remoteCard, turnRunning, type PermissionKind, type TaskCard, type TaskChild } from "../model";
 import type { PermissionButton, StopPhase } from "../actions";
 import { useTitleUpdateState, type TitleUpdateControl } from "../actions/title-update";
 import type { FirstPrompt } from "../data/first-prompt";
@@ -258,7 +258,7 @@ function createMessageOrder() {
 /** The details card: the header and the lead block, then the sections. */
 export function TaskDetailCards(given: TaskDetailCardsProps) {
   // An archived task has no Open, here or on its subtasks: Paseo would show another tab.
-  const opened = opensInPaseo(given.card) ? given : { ...given, onOpen: undefined };
+  const opened = withoutServerActions(opensInPaseo(given.card) ? given : { ...given, onOpen: undefined });
   // A person's only message is the first prompt, which its own section shows.
   const humanMessage = repeatsFirstPrompt(opened.humanMessage?.prompt, opened.firstPrompt?.prompt) ? null : opened.humanMessage;
   const props = humanMessage === opened.humanMessage ? opened : { ...opened, humanMessage };
@@ -1298,7 +1298,8 @@ function Properties(props: Inner) {
   const details = cardText.details;
   const location = card.location;
   const input = useInputCapabilities();
-  const canOpenFolder = Platform.OS === "web" && !props.touch && !input.touch;
+  // The folder is on the plugin's own host: another host's is not there to open.
+  const canOpenFolder = Platform.OS === "web" && !props.touch && !input.touch && !remoteCard(card);
   const revealPath = useRpc(revealPathRpc);
   const toast = useToast();
   const openFolder = async () => {
@@ -1834,6 +1835,8 @@ function TimelineTextBody(props: Inner & {
       .catch((error: unknown) => fail(error instanceof Error ? error.message : String(error)));
   }, []);
   const renderText = useMemo(() => query ? (text: string) => highlightText(text, query, tokens.isDark) : undefined, [query, tokens.isDark]);
+  // Revealing opens the path on this plugin's host: another host's file is not there, so its links copy the path.
+  const remote = remoteCard(props.card);
   if (!first) return null;
   const font = Math.round(prose.typography.content.size * 0.9 * adjustment);
   const line = variantMetrics(preferences.markdownVariant, font, props.touch === true).bodyLineHeight;
@@ -1880,7 +1883,7 @@ function TimelineTextBody(props: Inner & {
           onToggle={() => query ? setSearchFold({ query, closed: expanded }) : setOpen((was) => !was)}
         >
           <HoverPreviewContext.Provider value>
-            <MarkdownView text={text} streaming={streaming} renderText={renderText} tokens={prose} variant={preferences.markdownVariant} compact={props.touch === true} size={font} onRevealPath={onRevealPath} />
+            <MarkdownView text={text} streaming={streaming} renderText={renderText} tokens={prose} variant={preferences.markdownVariant} compact={props.touch === true} size={font} onRevealPath={remote ? undefined : onRevealPath} />
           </HoverPreviewContext.Provider>
         </FoldedText>
       </View>
@@ -2215,7 +2218,7 @@ function OutlineButton(props: {
  * Running: stop, then open the tab at the right. Asking: deny, allow as the
  * main button, and the tab shrunk to a square at the right. Otherwise: open the tab.
  */
-export function DetailActionBar(props: {
+export function DetailActionBar(given: {
   card: TaskCard;
   theme: PluginTheme;
   language: TasksLanguage;
@@ -2236,6 +2239,7 @@ export function DetailActionBar(props: {
   contentUnder?: boolean;
   controlsOnly?: boolean;
 }) {
+  const props = withoutServerActions(given);
   const { card } = props;
   const onOpen = opensInPaseo(card) ? props.onOpen : undefined;
   // An archived task's main button is Unarchive, in Open tab's place.
@@ -2389,6 +2393,14 @@ function SheetOpenClose(props: { tokens: TaskTokens; sidebar?: boolean; smallTab
 }
 
 export type DetailRead = { pending(agentId: string): boolean; press(card: TaskCard): void };
+
+/**
+ * Another host's card leaves out what this plugin's server does for its
+ * own host's agents: Stop, Mark read and unread, Unarchive and titles.
+ */
+function withoutServerActions<Props extends { card: TaskCard; stop?: unknown; unarchive?: unknown; markRead?: unknown; markUnread?: unknown; titleUpdates?: unknown }>(props: Props): Props {
+  return remoteCard(props.card) ? { ...props, stop: null, unarchive: null, markRead: null, markUnread: null, titleUpdates: undefined } : props;
+}
 
 /** Mark read takes Stop's place, as on the card: a card in review is never stoppable. */
 function readable(card: TaskCard, stop: string | null, read: DetailRead | null | undefined): DetailRead | null {
