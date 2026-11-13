@@ -1,8 +1,8 @@
-import React, { useMemo, useRef } from "react";
+import React, { useEffect, useMemo, useRef } from "react";
 import { Pressable, Text, View } from "react-native";
 import { TasksTypography, HOST_FONT as F, HOST_LINE } from "../typography";
-import type { PluginScreenProps } from "@getpaseo/plugin/client";
-import { Icon } from "@getpaseo/plugin/client/react-native";
+import { usePaseo, type PluginScreenProps } from "@getpaseo/plugin/client";
+import { Icon, useToast } from "@getpaseo/plugin/client/react-native";
 import { useDeviceTasksPreferences } from "../device-preferences";
 import { useTasksLanguage } from "../i18n";
 import { pluginRoot } from "../../components/focus-ring";
@@ -17,6 +17,8 @@ import { PhoneBoard } from "./phone-board";
 import { BOARD_STRINGS } from "./strings";
 import { useBoard, type BoardLayoutHandlers } from "./use-board";
 import { TaskQuestionDialog } from "../cards/question-dialog";
+import { consumeBoardOpen } from "./params";
+import { openedTask } from "../data";
 
 /**
  * The Tasks board (`addScreen` id `tasks`): the lanes side by side, scrolling
@@ -33,6 +35,21 @@ import { TaskQuestionDialog } from "../cards/question-dialog";
  * without one (or after it failed) it reads the settings itself.
  */
 export function TasksBoardScreen(props: PluginScreenProps) {
+  const toast = useToast();
+  const language = useTasksLanguage();
+  const navigation = props.navigation;
+  const paseo = usePaseo();
+  const token = props.params.openRequest;
+  useEffect(() => {
+    const agentId = consumeBoardOpen(props.host.id, token);
+    if (!agentId) return;
+    if (!navigation) {
+      toast.error(language === "zh" ? "无法打开任务：当前客户端不支持导航" : "Cannot open task: navigation is unavailable in this client");
+      return;
+    }
+    navigation.openAgent({ agentId });
+    openedTask(paseo, agentId);
+  }, [props.host.id, token, navigation, toast, language, paseo]);
   const store = useTasksEnabledStore();
   // Off, as the startup read or the settings page said: say so, and read nothing more.
   if (store.enabled === false) return <BoardOff {...props} />;
@@ -73,7 +90,7 @@ function BoardContent(props: PluginScreenProps) {
       <View {...pluginRoot} style={{ flex: 1, backgroundColor: props.theme.colors.surface0 }}>
         <SearchCoverageProvider cancelled={board.searchCancelled} setCancelled={board.setSearchCancelled} cancelText={board.strings.cancelSearch} resumeText={board.strings.resumeSearch} stoppedText={board.strings.searchStopped} status={board.searchStatus} historyLoading={board.searchHistoryLoading} historyError={board.tasks.historyError} retryHistory={board.tasks.clearHistoryError} historyLoadingText={board.strings.historyLoading} historyFailedText={board.strings.historyFailed} query={board.params.query} strings={board.fullConversationSearch ? board.strings.conversationSearchCoverage : board.strings.searchCoverage} fullConversation={board.fullConversationSearch} onFullConversationChange={board.setFullConversationSearch} fullConversationLabel={board.strings.fullConversationSearch} fullConversationShortLabel={board.strings.fullConversationShort} fullConversationHint={board.strings.fullConversationHint(board.fullConversationSearch)}>
           <MenuBoundsContext.Provider value={rootRef}>
-            {board.hostNotice ? <HostNotice text={board.hostNotice} theme={props.theme} /> : null}
+            {board.hostNotice ? <HostNotice text={board.hostNotice.text} failed={board.hostNotice.failed} theme={props.theme} /> : null}
             {layout}
             <TaskQuestionDialog store={board.questionDialog} cardById={board.cardById} submit={board.submitQuestions} compact={compact} onOpen={board.callbacks.onOpen} theme={props.theme} language={board.language} />
           </MenuBoundsContext.Provider>
@@ -84,18 +101,21 @@ function BoardContent(props: PluginScreenProps) {
 }
 
 /**
- * One quiet line above the board while another Paseo host is offline or
- * reconnecting: its cards are left out until it is back (`data/hosts.ts`).
+ * One quiet line above the board while another Paseo host's cards are
+ * missing: it is offline or reconnecting, or online but its tasks could not
+ * be read (`failed`, with a warning mark). It goes once every host is read
+ * again (`data/hosts.ts`).
  */
-function HostNotice(props: { text: string; theme: PluginScreenProps["theme"] }) {
+function HostNotice(props: { text: string; failed: boolean; theme: PluginScreenProps["theme"] }) {
   const colors = props.theme.colors;
   return (
     <View
       accessibilityRole="summary"
+      accessibilityLiveRegion="polite"
       testID="host-notice"
       style={{ flexDirection: "row", alignItems: "center", gap: 6, paddingHorizontal: 16, paddingVertical: 4, borderBottomWidth: HAIRLINE, borderBottomColor: colors.border }}
     >
-      <Icon name="CloudOff" size={13} color={colors.foregroundMuted} />
+      <Icon name={props.failed ? "CircleAlert" : "CloudOff"} size={13} color={props.failed ? colors.statusWarning : colors.foregroundMuted} />
       <Text numberOfLines={1} style={{ flex: 1, minWidth: 0, fontSize: F.sm, lineHeight: HOST_LINE.sm, color: colors.foregroundMuted }}>{props.text}</Text>
     </View>
   );

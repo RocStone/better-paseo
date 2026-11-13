@@ -8,8 +8,8 @@ import type { PaseoApi } from "@getpaseo/client";
 import { DEFAULT_TASKS_SETTINGS, TASKS_SETTINGS, effectiveCard, type CardSettings, type LaneWidth, type TasksSettings } from "../../../shared/tasks-settings";
 import { permissionButtons, respondToPermission, useArchiveControl, useReadControl, useStopControl, useUnarchiveControl, useUnreadControl, type ArchiveControl, type PermissionButton, type ReadControl, type StopControl, type UnarchiveControl, type UnreadControl } from "../actions";
 import type { CardCallbacks, TaskClock } from "../cards";
-import { filterLanes, setTasksArchivedLane, useTasks, withSubagentCards, type TasksHandle } from "../data";
-import { awayNotice, hostApi, routedPaseo, useBoardHosts, useMergedTasks, useRemoteTasks, type BoardHosts } from "../data/hosts";
+import { filterLanes, openedTask, setTasksArchivedLane, useTasks, withSubagentCards, type TasksHandle } from "../data";
+import { hostApi, hostNotice as hostNoticeOf, routedPaseo, useBoardHosts, useMergedTasks, useRemoteReadFailures, useRemoteTasks, type BoardHosts, type HostNotice } from "../data/hosts";
 import { useSearchFirstPrompts, retrySearchPrompt, type SearchCoverageControl } from "../data/search-first-prompts";
 import { useSearchConversations } from "../data/search-conversations";
 import { useTasksLanguage, type TasksLanguage } from "../i18n";
@@ -39,9 +39,8 @@ import { useTaskAvailability } from "../availability";
 import { useSearchHistory } from "./search-history";
 import { taskIssueText } from "../cards/availability-tag";
 import type { TaskOperation } from "../../../shared/task-availability";
-import { questionDialogStore, questionRequestKey, type QuestionDialogStore, type QuestionDialogState } from "../actions/question-dialog";
-import { questionAnswers, questionDraftSupported, questionFormSupported } from "../question-form";
-import { questionAnswerPending } from "../actions";
+import { questionDialogStore, type QuestionDialogStore, type QuestionDialogState } from "../actions/question-dialog";
+import { submitQuestion } from "../actions/submit-question";
 
 /** What both layouts share: settings, data after the filters, the clock, and the card callbacks. */
 export interface BoardController {
@@ -84,8 +83,11 @@ export interface BoardController {
   paseo: PaseoApi;
   /** The hosts the board shows; `multi` once more than one is configured. */
   hosts: BoardHosts;
-  /** One quiet line naming the hosts whose cards are missing (offline or reconnecting); null while all are read. */
-  hostNotice: string | null;
+  /**
+   * One quiet line naming the hosts whose cards are missing: offline or
+   * reconnecting, or online with a failed task read; null while all are read.
+   */
+  hostNotice: HostNotice | null;
   /** The lanes after the filter bar and search. */
   lanes: Record<LaneId, LaneModel>;
   /** First messages still loading or not covered by this search. Other metadata is searched for every card. */
@@ -321,7 +323,10 @@ export function useBoard(
   // The availability probe asks this plugin's server, which sees only this host's directories: the board's own cards only.
   const availability = useTaskAvailability(useCarriedTasks(hostId, options, useTasks(paseo, options, lingerBoard)), visible, hostId);
   // Every other online host's cards, in the same lanes (`data/hosts.ts`). One host: the board's own data, as it was.
-  const merged = useMergedTasks(availability.tasks, hosts, useRemoteTasks(hosts.remotes, options));
+  const remoteTasks = useRemoteTasks(hosts.remotes, options);
+  const merged = useMergedTasks(availability.tasks, hosts, remoteTasks);
+  // A remote host's failed read stays out of `tasks.error` (this host's toast): the host notice names it, and it is read again.
+  const failedHosts = useRemoteReadFailures(remoteTasks);
   const tasks = merged.tasks;
   const routes = useRef(merged.routes);
   routes.current = merged.routes;
@@ -523,9 +528,13 @@ export function useBoard(
       latest.current.toast.show(latest.current.strings.archivedLane.cannotOpen);
       return;
     }
+    const navigation = latest.current.props.navigation;
+    if (!navigation) return;
     // Another host's agent opens on that host, as Paseo's sidebar opens it.
     const serverId = routes.current.get(agentId);
-    latest.current.props.navigation?.openAgent(serverId ? { agentId, serverId } : { agentId });
+    navigation.openAgent(serverId ? { agentId, serverId } : { agentId });
+    // Opened is seen: a task marked unread does not stay in review. The marks are this plugin server's, so this host's tasks only.
+    if (!serverId) openedTask(latest.current.local, agentId);
   }, []);
   const requestProjectIcon = useCallback((projectId: string) => latest.current.tasks.requestProjectIcon(projectId), []);
   const buttonsFor = useCallback((card: TaskCard) => buttonsIn(card, language), [language]);
@@ -533,19 +542,9 @@ export function useBoard(
   const questionDialog = questionDialogStore(paseo);
   const submitQuestions = useCallback(async (state: QuestionDialogState) => {
     const current = latest.current;
-    const issue = routes.current.has(state.agentId) ? undefined : await current.availability.check(state.agentId, "permission");
-    if (issue) throw new Error(taskIssueText(issue, current.language));
-    const updated = latest.current.tasks.byId.get(state.agentId);
-    if (latest.current.paseo !== current.paseo || !updated || questionRequestKey(updated) !== state.key) {
-      throw new Error(current.language === "zh" ? "问题已变更或关闭，请重新查看。" : "The question changed or closed. Please view it again.");
-    }
-    const questions = state.permission.questions;
-    if (!questionFormSupported(questions, updated.provider, state.permission.name)) throw new Error("This question cannot be represented by the host form protocol.");
-    if (!questionDraftSupported(questions!, state.draft, updated.provider, state.permission.name)) throw new Error(current.language === "zh" ? "Codex 同步多选的自定义回答不能包含逗号：宿主会将其拆分。" : "Custom answers to Codex synchronous multi-select questions cannot contain commas: the host splits them.");
-    const answers = questionAnswers(questions!, state.draft);
-    if (!answers) throw new Error(current.language === "zh" ? "请完成所有问题。" : "Please answer every question.");
-    if (questionAnswerPending(current.paseo, state.agentId, state.permission.requestId)) throw new Error(current.language === "zh" ? "此问题正在提交回答。" : "An answer to this question is already being submitted.");
-    await respondToPermission(current.paseo, state.agentId, { key: "form", label: "", variant: "secondary", kind: "respond", action: { behavior: "allow", id: null }, answers }, state.permission.requestId);
+    // This plugin's server checks directories on its own host only; another host's agent goes straight to it.
+    const check = (id: string) => (routes.current.has(id) ? Promise.resolve(undefined) : current.availability.check(id, "permission"));
+    await submitQuestion(current.paseo, state, current.language, (id) => latest.current.paseo === current.paseo ? latest.current.tasks.byId.get(id) : undefined, check);
   }, []);
   const stopAvailable = stop.available;
   const readAvailable = read.available;
@@ -604,7 +603,7 @@ export function useBoard(
     [hasNavigation, stopAvailable, readAvailable, unarchiveAvailable, open, handlers, setParams, titleUpdates, write, cardById, conversations.status, questionDialog],
   );
 
-  const hostNotice = useMemo(() => awayNotice(hosts.away, language), [hosts.away, language]);
+  const hostNotice = useMemo(() => hostNoticeOf(hosts.away, failedHosts, language), [hosts.away, failedHosts, language]);
   const guardedRead = useMemo(() => ({ ...read, press: (card: TaskCard) => write(card.id, "read", () => read.press(card)) }), [read, write]);
   const guardedUnarchive = useMemo(() => ({ ...unarchive, press: (agentId: string) => write(agentId, "unarchive", () => unarchive.press(agentId)) }), [unarchive, write]);
   const guardedArchive = useMemo(() => ({ ...archive, press: (agentId: string) => write(agentId, "archive", () => archive.press(agentId)) }), [archive, write]);

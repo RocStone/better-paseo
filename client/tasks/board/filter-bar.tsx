@@ -1,6 +1,6 @@
 import React, { memo, useCallback, useContext, useEffect, useRef, useState, type ReactNode, type Ref } from "react";
 import { Animated, Platform, Pressable, View, useWindowDimensions, type LayoutChangeEvent, type TextInput as NativeTextInput } from "react-native";
-import { Icon } from "@getpaseo/plugin/client/react-native";
+import { Icon, ScrollView } from "@getpaseo/plugin/client/react-native";
 import type { PluginTheme } from "@getpaseo/plugin";
 import { LANE_WIDTHS } from "../../../shared/tasks-settings";
 import { TaskText as Text, HOST_FONT as F, HOST_LINE, TASK_MONO, useTasksFontScale, taskControlHeight } from "../typography";
@@ -251,7 +251,7 @@ function DesktopToolbarView(props: {
             ) : (
               entry.key === "q" ? (
                 <View key={entry.key} style={{ flexDirection: "row", alignItems: "center", minWidth: 0, maxWidth: "100%", flexShrink: 1, gap: 10 }}>
-                  <Chip chip={entry} onClear={() => board.setParams(entry.clear)} clearLabel={`${strings.clear} ${entry.value}`} theme={theme} />
+                  <SearchQueryChip board={board} theme={theme} />
                   <SearchCoverageItems theme={theme} />
                 </View>
               ) : <Chip key={entry.key} chip={entry} onClear={() => board.setParams(entry.clear)} clearLabel={`${strings.clear} ${entry.value}`} theme={theme} />
@@ -571,9 +571,9 @@ function DesktopFilterBarView(props: {
   // Every word the buttons drop when icon-only: the toggles' only while they show.
   const fit = useLabelFit([
     words.agent,
+    words.label,
     words.project,
     words.workspace,
-    words.label,
     ...(shown.hosts?.length ? [words.host] : []),
     { text: words.sort, maxWidth: SORT_LABEL_MAX_WIDTH },
   ], !tablet, strings.laneWidth.label);
@@ -649,6 +649,16 @@ function DesktopFilterBarView(props: {
               onClose={() => setMenu(null)}
             />
           </MenuButton>
+          <MenuButton icon={FILTER_ICONS.label} label={words.label} compact={compact} tip={tip(words.label, strings.tips.labels)} open={menu === "label"} onPress={() => toggle("label")} theme={theme}>
+            <CascadeMenu
+              sections={labelMenuSections(shown, theme, strings, (id) => setParams((p) => ({ ...p, labels: toggleItem(p.labels, id) })))}
+              theme={theme}
+              width={menuWidth(200, scale, window.width - MENU_EDGE * 2)}
+              top={toolbarButtonSize(scale) + 6}
+              align="left"
+              onClose={() => setMenu(null)}
+            />
+          </MenuButton>
           <MenuButton icon={FILTER_ICONS.project} label={words.project} compact={compact} tip={tip(words.project, strings.tips.project)} open={menu === "project"} onPress={() => toggle("project")} theme={theme}>
             <CascadeMenu
               sections={withEmptyGroups(projectMenuSections(shown, strings, board.hostId, (project) => setParams((p) => toggleProject(p, project))))}
@@ -668,16 +678,6 @@ function DesktopFilterBarView(props: {
               top={toolbarButtonSize(scale) + 6}
               align="left"
               search={strings.menuSearch}
-              onClose={() => setMenu(null)}
-            />
-          </MenuButton>
-          <MenuButton icon={FILTER_ICONS.label} label={words.label} compact={compact} tip={tip(words.label, strings.tips.labels)} open={menu === "label"} onPress={() => toggle("label")} theme={theme}>
-            <CascadeMenu
-              sections={labelMenuSections(shown, theme, strings, (id) => setParams((p) => ({ ...p, labels: toggleItem(p.labels, id) })))}
-              theme={theme}
-              width={menuWidth(200, scale, window.width - MENU_EDGE * 2)}
-              top={toolbarButtonSize(scale) + 6}
-              align="left"
               onClose={() => setMenu(null)}
             />
           </MenuButton>
@@ -907,11 +907,21 @@ function useLabelFit(dropped: readonly DroppedWord[], enabled: boolean, laneWidt
  * label's is its own solid tag in its colour. The rest ("Title has", "Done")
  * keep the muted word.
  */
-function Chip(props: { chip: ActiveChip; onClear(): void; clearLabel: string; theme: PluginTheme }) {
+function Chip(props: { chip: ActiveChip; onClear(): void; clearLabel: string; theme: PluginTheme; onEdit?: { label: string; hint?: string; press(): void }; lead?: ReactNode; shrink?: boolean }) {
   const { chip, theme } = props;
   const colors = theme.colors;
   const scale = useTasksFontScale();
   const unit = chip.unit ?? chip.group;
+  if (chip.key === "q") return (
+    <View testID="search-query-chip" style={{ height: taskControlHeight(Platform.OS === "web" ? 24 : 36, scale), maxWidth: "100%", flexShrink: props.shrink === false ? 0 : 1, flexDirection: "row", alignItems: "center", gap: 4, paddingLeft: 9, paddingRight: 4 }}>
+      <View pointerEvents="none" testID="search-query-chip-fill" style={{ position: "absolute", left: 0, right: 0, height: taskControlHeight(24, scale), borderRadius: taskControlHeight(12, scale), backgroundColor: taskTokens(theme).card.pillFill, borderWidth: HAIRLINE, borderColor: taskTokens(theme).card.pillBorder }} />
+      {props.onEdit ? <HoverPressable accessibilityRole="button" accessibilityLabel={props.onEdit.label} accessibilityHint={props.onEdit.hint} onPress={props.onEdit.press} testID="search-query-edit" style={() => ({ minWidth: 0, flexShrink: 1, height: "100%", flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 4 })}>
+        {props.lead}
+        <Text numberOfLines={1} style={{ fontSize: F.sm, color: colors.foregroundMuted, maxWidth: 220, flexShrink: 1 }}>{chip.value}</Text>
+      </HoverPressable> : <Text numberOfLines={1} style={{ fontSize: F.sm, color: colors.foregroundMuted, maxWidth: 220, flexShrink: 1 }}>{chip.value}</Text>}
+      <ClearButton label={props.clearLabel} onPress={props.onClear} theme={theme} touch={Platform.OS !== "web"} />
+    </View>
+  );
   return (
     <View style={{ height: toolbarButtonSize(scale), maxWidth: "100%", flexShrink: 1, flexDirection: "row", alignItems: "center", gap: 4, paddingLeft: 10, paddingRight: 4, borderWidth: HAIRLINE, borderColor: colors.border, borderRadius: 6 }}>
       {unit ? (
@@ -993,7 +1003,7 @@ function GroupChip(props: { group: ChipGroup; open: boolean; onPress(): void; on
   );
 }
 
-function ClearButton(props: { label: string; onPress(): void; theme: PluginTheme }) {
+function ClearButton(props: { label: string; onPress(): void; theme: PluginTheme; touch?: boolean }) {
   const colors = props.theme.colors;
   return (
     <HoverPressable
@@ -1001,6 +1011,7 @@ function ClearButton(props: { label: string; onPress(): void; theme: PluginTheme
       accessibilityLabel={props.label}
       {...tipProps(props.label)}
       onPress={props.onPress}
+      hitSlop={props.touch ? { top: 8, bottom: 8, left: 4, right: 4 } : undefined}
       style={(hovered, pressed) => ({ width: 20, height: 20, borderRadius: 4, alignItems: "center", justifyContent: "center", backgroundColor: "transparent", ...liftStyle(() => taskTokens(props.theme), surfaceLift(hovered, pressed)) })}
     >
       <Icon name="X" size={12} color={colors.foregroundMuted} />
@@ -1080,8 +1091,19 @@ function MenuButton(props: { icon: string | React.ReactElement; label: string; c
 }
 
 
-/** The same Contains chip beside compact search fields. */
-export function SearchQueryChip({ board, theme }: { board: BoardController; theme: PluginTheme }) {
-  if (!board.params.query.trim()) return null;
-  return <Chip chip={{ key: "q", kind: board.strings.searchContains, value: `「${board.params.query.trim()}」`, clear: (params) => ({ ...params, query: "" }) }} onClear={() => board.setParams((params) => ({ ...params, query: "" }))} clearLabel={`${board.strings.clear} ${board.strings.searchContains}`} theme={theme} />;
+/** Each whitespace-separated search term can be removed independently. */
+export function SearchQueryChip({ board, theme, onEdit, editHint, lead, scrollable = true }: { board: BoardController; theme: PluginTheme; onEdit?(): void; editHint?: string; lead?: ReactNode; scrollable?: boolean }) {
+  const scale = useTasksFontScale();
+  const words = board.params.query.trim().split(/\s+/).filter(Boolean);
+  if (!words.length) return null;
+  const chips = words.map((word, index) => {
+    const clear = (params: BoardController["params"]) => ({ ...params, query: params.query.trim().split(/\s+/).filter((_, position) => position !== index).join(" ") });
+    return <Chip key={`${index}:${word}`} chip={{ key: "q", kind: board.strings.searchContains, value: `「${word}」`, clear }} onClear={() => board.setParams(clear)} clearLabel={`${board.strings.clear} ${word}`} theme={theme} lead={index === 0 ? lead : undefined} shrink={words.length === 1} onEdit={onEdit ? { label: `${board.strings.editSearch}: ${word}`, hint: editHint, press: onEdit } : undefined} />;
+  });
+  if (words.length === 1) return chips[0];
+  const rowStyle = { flexDirection: "row" as const, alignItems: "center" as const, gap: 6 };
+  if (!scrollable) return <View testID="search-query-chips" style={rowStyle}>{chips}</View>;
+  return <ScrollView testID="search-query-chips" horizontal showsHorizontalScrollIndicator={false} keyboardShouldPersistTaps="handled" style={{ minWidth: 0, maxWidth: "100%", flexGrow: 0, flexShrink: 1, height: taskControlHeight(Platform.OS === "web" ? 24 : 36, scale) }} contentContainerStyle={rowStyle}>
+    {chips}
+  </ScrollView>;
 }

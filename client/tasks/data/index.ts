@@ -71,6 +71,7 @@ export interface SidebarCounts {
   /** False until the first active snapshot arrives. */
   ready: boolean;
   hidden?: TaskCard[];
+  questions?: TaskCard[];
 }
 
 export interface TasksSnapshot {
@@ -445,6 +446,16 @@ let unreadMarksLoader: UnreadMarksLoader | null = null;
 /** `contribute` sets the loader; the marks are read with the subagents and after a Mark unread. */
 export function setUnreadMarksLoader(next: UnreadMarksLoader | null): void {
   unreadMarksLoader = next;
+}
+
+/** `tasks.unread-clear`: drop these agents' unread marks, as the board opened them. Rejects on failure. */
+export type UnreadClearer = (agentIds: string[]) => Promise<void>;
+
+let unreadClearer: UnreadClearer | null = null;
+
+/** `contribute` sets the clearer; `openedTask` calls it each time the board opens an agent. */
+export function setUnreadClearer(next: UnreadClearer | null): void {
+  unreadClearer = next;
 }
 
 /** `tasks.parent-origins`: the parents whose archive detached a child, or null while `since` is still the server's version. */
@@ -948,6 +959,7 @@ interface TaskStore {
   dropHolds(): void;
   getSnapshot(options: TasksOptions): TasksHandle;
   getCounts(scope?: CountScope): SidebarCounts;
+  getQuestionCounts(scope?: CountScope): SidebarCounts;
   refresh(): Promise<TasksRefreshResult>;
   setArchivedLane(on: boolean): void;
   loadMoreDone(window: DoneWindow): void;
@@ -955,6 +967,7 @@ interface TaskStore {
   refreshParent(id: string): Promise<boolean | null>;
   refreshReads(): void;
   refreshUnreads(): void;
+  openedAgent(id: string): void;
   requestProjectIcon(projectId: string): void;
 }
 
@@ -1034,6 +1047,8 @@ function createStore(api: PaseoApi, remote = false): TaskStore {
   const readMarks = new Map<string, number>();
   /** The server's unread marks (`tasks.unreads`), as epoch ms by agent. */
   const unreadMarks = new Map<string, number>();
+  /** Agents the board opened whose unread clear is still out (`openedAgent`). */
+  const clearingUnreads = new Map<string, number>();
   /** Failed parents asked for by id, once per version of the list. */
   const subagentParentsAsked = new Set<string>();
   const subscriptions = new Map<string, StoreSubscription>();
@@ -1060,6 +1075,8 @@ function createStore(api: PaseoApi, remote = false): TaskStore {
   /** The workspace list itself arrived, not a failed read: only then does a missing workspace mean archived. */
   let workspacesListed = false;
   let countsCache: SidebarCounts | null = null;
+  let questionCountsCache: SidebarCounts | null = null;
+  let countQuestions: TaskCard[] = [];
   let countsDirty = true;
   let countsScope: CountScope | undefined;
   let loadingDone = false;
@@ -1989,7 +2006,8 @@ function createStore(api: PaseoApi, remote = false): TaskStore {
       const next = new Map<string, number>();
       for (const mark of marks) {
         const at = Date.parse(mark.unreadAt);
-        if (Number.isFinite(at)) next.set(mark.agentId, at);
+        // A read that left before an open's clear landed still lists the mark.
+        if (Number.isFinite(at) && !clearingUnreads.has(mark.agentId)) next.set(mark.agentId, at);
       }
       const changed = new Set<string>();
       for (const [id, at] of next) if (unreadMarks.get(id) !== at) changed.add(id);
@@ -2731,6 +2749,16 @@ function createStore(api: PaseoApi, remote = false): TaskStore {
     return snapshot;
   }
 
+  function getQuestionCounts(scope?: CountScope): SidebarCounts {
+    const counts = getCounts(scope);
+    if (!questionCountsCache || questionCountsCache.questions !== countQuestions ||
+      questionCountsCache.needsInput !== counts.needsInput || questionCountsCache.running !== counts.running ||
+      questionCountsCache.review !== counts.review || questionCountsCache.ready !== counts.ready || questionCountsCache.hidden !== counts.hidden) {
+      questionCountsCache = { ...counts, questions: countQuestions };
+    }
+    return questionCountsCache;
+  }
+
   function getCounts(scope?: CountScope): SidebarCounts {
     if (countsDirty || !countsCache || scope !== countsScope) {
       countsDirty = false;
@@ -2752,6 +2780,8 @@ function createStore(api: PaseoApi, remote = false): TaskStore {
         }
       }
       const shown = scope ? filterLanes(lanes, scope.filters, scope.firstMessage && scope.filters.query.trim() ? firstMessagesOf(lanes, scope.firstMessage) : undefined) : lanes;
+      const questions = shown.needs_input.cards.filter((card) => card.permission?.kind === "question" || card.permission?.kind === "other").sort(laneCompare("needs_input"));
+      if (countQuestions.length !== questions.length || questions.some((card, index) => countQuestions[index] !== card)) countQuestions = questions;
       const needsInput = shown.needs_input.cards.length;
       const running = shown.running.cards.length;
       const review = shown.review.cards.length;
@@ -2891,6 +2921,35 @@ function createStore(api: PaseoApi, remote = false): TaskStore {
 
   function refreshUnreads(): void {
     void readUnreads(generation);
+  }
+
+  /**
+   * The board opened this agent in Paseo: it was seen, so its unread mark
+   * goes now and on the server. The server is asked every time, as the marks
+   * may not have been read yet; its marks are read again after, so a failed
+   * or older server puts the mark back.
+   */
+  function openedAgent(id: string): void {
+    const clearer = unreadClearer;
+    if (!clearer) return;
+    if (unreadMarks.delete(id)) {
+      batchUpdates(() => {
+        refreshFinalCard(id);
+        const parent = parentByChild.get(id);
+        if (parent) refreshFinalCard(parent);
+        syncSubagentParents();
+        notify();
+      });
+    }
+    const run = generation;
+    clearingUnreads.set(id, (clearingUnreads.get(id) ?? 0) + 1);
+    const settle = () => {
+      const left = (clearingUnreads.get(id) ?? 1) - 1;
+      if (left > 0) clearingUnreads.set(id, left);
+      else clearingUnreads.delete(id);
+      if (run === generation) void readUnreads(run);
+    };
+    void Promise.resolve().then(() => clearer([id])).then(settle, settle);
   }
 
   function refreshParent(id: string): Promise<boolean | null> {
@@ -3136,6 +3195,7 @@ function createStore(api: PaseoApi, remote = false): TaskStore {
     },
     getSnapshot,
     getCounts,
+    getQuestionCounts,
     refresh,
     setArchivedLane,
     loadMoreDone,
@@ -3143,6 +3203,7 @@ function createStore(api: PaseoApi, remote = false): TaskStore {
     refreshParent,
     refreshReads,
     refreshUnreads,
+    openedAgent,
     requestProjectIcon,
   };
   return store;
@@ -3220,6 +3281,17 @@ export function holdTasks(paseo: PaseoApi, reason: TasksHoldReason, ms: number |
   getStore(paseo).hold(reason, ms);
 }
 
+/**
+ * The board opened an agent in Paseo: drop its unread mark, so a task marked
+ * unread and then looked at does not come back to review. Without a store
+ * for this host the server is still told.
+ */
+export function openedTask(paseo: PaseoApi, agentId: string): void {
+  const store = stores.get(paseo);
+  if (store) store.openedAgent(agentId);
+  else void unreadClearer?.([agentId]).catch(() => {});
+}
+
 export function hasTasksHold(paseo: PaseoApi, reason: TasksHoldReason): boolean {
   return stores.get(paseo)?.hasHold(reason) ?? false;
 }
@@ -3236,13 +3308,13 @@ export function releaseTasksHolds(): void {
  * the cards an unfiltered board draws, a provider subagent's included.
  * Re-renders only when a number changes.
  */
-export function useTaskCounts(paseo: PaseoApi, review: boolean, scope?: CountScope): SidebarCounts {
+export function useTaskCounts(paseo: PaseoApi, review: boolean, scope?: CountScope, questions = false): SidebarCounts {
   const store = getStore(paseo);
   const subscribe = useMemo(
     () => (listener: () => void) => store.subscribe(listener, { board: false, done: false, attention: review }),
     [store, review],
   );
-  const getCounts = useMemo(() => () => store.getCounts(scope), [store, scope]);
+  const getCounts = useMemo(() => () => questions ? store.getQuestionCounts(scope) : store.getCounts(scope), [store, scope, questions]);
   return useSyncExternalStore(subscribe, getCounts, getCounts);
 }
 

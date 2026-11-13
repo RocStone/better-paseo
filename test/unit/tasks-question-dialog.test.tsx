@@ -4,15 +4,32 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import "./helpers/quiet-renderer";
 
 vi.hoisted(() => { (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true; });
-vi.mock("react-native", async () => import("./helpers/rn-mock"));
+const modalRenders = vi.hoisted(() => ({ count: 0 }));
+const keyboard = vi.hoisted(() => ({ hide: undefined as (() => void) | undefined, show: undefined as (() => void) | undefined, blur: vi.fn(), scrollToEnd: vi.fn() }));
+vi.mock("react-native", async () => {
+  const rn = await import("./helpers/rn-mock");
+  return { ...rn, Keyboard: { addListener: (event: string, callback: () => void) => {
+    const key = event === "keyboardDidHide" ? "hide" : "show";
+    keyboard[key] = callback;
+    return { remove: () => { keyboard[key] = undefined; } };
+  } } };
+});
 vi.mock("@getpaseo/plugin/client/react-native", async () => {
   const rn = await import("./helpers/rn-mock");
-  return { TextInput: rn.TextInput, ScrollView: rn.ScrollView,
+  const Input = React.forwardRef((_props: Record<string, unknown>, ref) => {
+    React.useImperativeHandle(ref, () => ({ blur: keyboard.blur }));
+    return React.createElement(rn.TextInput, _props);
+  });
+  const Scroll = React.forwardRef((props: Record<string, unknown>, ref) => {
+    React.useImperativeHandle(ref, () => ({ scrollToEnd: keyboard.scrollToEnd }));
+    return React.createElement(rn.ScrollView, props);
+  });
+  return { TextInput: Input, ScrollView: Scroll,
     Icon: (props: object) => React.createElement("Icon", props),
     Modal: Object.assign((props: { children?: React.ReactNode }) => React.createElement("HostModal", props, props.children),
-      { Content: (props: { children?: React.ReactNode }) => React.createElement("ModalContent", props, props.children) }) };
+      { Content: (props: { children?: React.ReactNode }) => { modalRenders.count++; return React.createElement("ModalContent", props, props.children); } }) };
 });
-import { TaskQuestionDialog } from "../../client/tasks/cards/question-dialog";
+import { TaskInlineQuestions, TaskQuestionDialog } from "../../client/tasks/cards/question-dialog";
 import { createQuestionDialogStore, questionDialogStore } from "../../client/tasks/actions/question-dialog";
 import { parseTaskQuestions, questionAnswers, questionDraftSupported, questionFormSupported, EMPTY_QUESTION_DRAFT } from "../../client/tasks/question-form";
 import { permissionButtons, respondToPermission } from "../../client/tasks/actions";
@@ -75,6 +92,87 @@ describe("task question dialog", () => {
     await act(async () => { store.open(current); tree = TestRenderer.create(render()); });
     return { store, fake, update: async (next: TaskCard) => { current = next; await act(async () => tree!.update(render())); } };
   }
+  it("separates card navigation from question tabs and preserves each card draft", async () => {
+    const first = card({ questions: [question, { ...question, header: "Second" }] });
+    const second = { ...card(), id: "another", title: "Another task", permission: { ...card().permission!, requestId: "another-request" } };
+    const cards = [first, second];
+    const store = createQuestionDialogStore();
+    const send = vi.fn(async () => {});
+    await act(async () => { store.open(first); tree = TestRenderer.create(<TaskQuestionDialog store={store} cards={cards} cardById={(id) => cards.find((item) => item.id === id)} submit={send} theme={theme} language="zh" />); });
+    expect(host("task-question-card-pager")).toBeDefined();
+    expect(host("task-question-tab-1")).toBeDefined();
+    await act(async () => host("task-question-option-0-0").props.onPress());
+    await act(async () => host("task-question-next-card").props.onPress());
+    expect(store.get()?.agentId).toBe("another");
+    await act(async () => host("task-question-previous-card").props.onPress());
+    expect(store.get()?.draft.selections[0]).toEqual([0]);
+    await act(async () => host("task-question-tab-1").props.onPress());
+    await act(async () => host("task-question-option-1-1").props.onPress());
+    await act(async () => host("task-question-submit").props.onPress());
+    expect(send).toHaveBeenCalledOnce();
+    expect(store.get()?.agentId).toBe("another");
+  });
+  it("keeps the modal portal stable through consecutive text changes", async () => {
+    const current = card({ questions: [{ ...question, options: [] }] });
+    const { store, fake } = await mount(current);
+    const renders = modalRenders.count;
+    await act(async () => host("task-question-input-0").props.onChangeText("你"));
+    expect(host("task-question-input-0").props.value).toBe("你");
+    await act(async () => host("task-question-input-0").props.onChangeText("你好"));
+    expect(host("task-question-input-0").props.value).toBe("你好");
+    expect(modalRenders.count).toBe(renders);
+    expect(store.get()?.draft.texts[0]).toBe("你好");
+    await act(async () => host("task-question-submit").props.onPress());
+    expect(fake.permissionResponses[0]?.response).toEqual({ behavior: "allow", updatedInput: { answers: { "Original header": "你好" } } });
+  });
+  it.each(["web", "ios", "android"])("highlights only the focused answer input on %s", async (platform) => {
+    (globalThis as { __rnMockOS?: string }).__rnMockOS = platform;
+    await mount(card({ questions: [question, { ...question, header: "Second" }] }));
+    const input = () => host("task-question-input-0");
+    expect(input().props.style.at(-1).borderColor).toBe(theme.colors.border);
+    const renders = modalRenders.count;
+    await act(async () => input().props.onFocus());
+    expect(input().props.style.at(-1).borderColor).toBe(theme.colors.accent);
+    await act(async () => input().props.onChangeText("Hello"));
+    expect(input().props.value).toBe("Hello");
+    expect(input().props.style.at(-1).borderColor).toBe(theme.colors.accent);
+    expect(modalRenders.count).toBe(renders);
+    await act(async () => input().props.onBlur());
+    expect(input().props.style.at(-1).borderColor).toBe(theme.colors.border);
+    await act(async () => host("task-question-tab-1").props.onPress());
+    expect(host("task-question-input-1").props.style.at(-1).borderColor).toBe(theme.colors.border);
+  });
+  it.each(["ios", "android"])("blurs the answer and clears its highlight when the keyboard hides on %s", async (platform) => {
+    (globalThis as { __rnMockOS?: string }).__rnMockOS = platform;
+    keyboard.blur.mockClear();
+    await mount();
+    await act(async () => host("task-question-input-0").props.onFocus());
+    await act(async () => host("task-question-input-0").props.onChangeText("Draft"));
+    expect(keyboard.hide).toBeTypeOf("function");
+    await act(async () => keyboard.hide!());
+    expect(keyboard.blur).toHaveBeenCalledOnce();
+    expect(keyboard.hide).toBeUndefined();
+    expect(host("task-question-input-0").props.style.at(-1).borderColor).toBe(theme.colors.border);
+    expect(host("task-question-input-0").props.value).toBe("Draft");
+  });
+  it.each(["ios", "android"])("reveals the focused answer after the keyboard and viewport change on %s", async (platform) => {
+    (globalThis as { __rnMockOS?: string }).__rnMockOS = platform;
+    keyboard.scrollToEnd.mockClear();
+    await mount(card({ questions: [question, { ...question, header: "Second" }] }));
+    const scroller = () => tree!.root.findAllByType("ScrollView" as never).find((node) => node.props.keyboardShouldPersistTaps === "handled")!;
+    await act(async () => scroller().props.onLayout());
+    expect(keyboard.scrollToEnd).not.toHaveBeenCalled();
+    await act(async () => host("task-question-input-0").props.onFocus());
+    expect(keyboard.scrollToEnd).toHaveBeenCalledWith({ animated: true });
+    keyboard.scrollToEnd.mockClear();
+    await act(async () => scroller().props.onLayout());
+    await act(async () => keyboard.show!());
+    expect(keyboard.scrollToEnd).toHaveBeenCalledTimes(2);
+    await act(async () => host("task-question-tab-1").props.onPress());
+    keyboard.scrollToEnd.mockClear();
+    await act(async () => scroller().props.onLayout());
+    expect(keyboard.scrollToEnd).not.toHaveBeenCalled();
+  });
   it.each(["web", "ios", "android"])("expands long previews without selecting the option on %s", async (platform) => {
     (globalThis as { __rnMockOS?: string }).__rnMockOS = platform;
     const preview = "First\nSecond\nThird\nFourth\nFifth\nLast";
@@ -209,5 +307,58 @@ describe("task question dialog", () => {
     const first = createFakePaseo().paseo;
     expect(questionDialogStore(first)).toBe(questionDialogStore(first));
     expect(questionDialogStore(first)).not.toBe(questionDialogStore(createFakePaseo().paseo));
+  });
+});
+
+
+describe("inline task questions", () => {
+  it("shares drafts with the dialog and submits multi-select and text answers", async () => {
+    const current = card({ questions: [{ ...question, multiSelect: true }, { ...question, header: "Second", options: [] }] });
+    const store = createQuestionDialogStore();
+    const send = vi.fn(async (_state: import("../../client/tasks/actions/question-dialog").QuestionDialogState) => {});
+    const unsubscribe = store.subscribe(() => {});
+    await act(async () => { tree = TestRenderer.create(<TaskInlineQuestions source={store} card={current} submit={send} theme={theme} language="zh" />); });
+    expect(tree!.root.findAll((node) => typeof node.type === "string" && node.props.testID === "task-question-context")).toHaveLength(0);
+    await act(async () => host("task-question-option-0-0").props.onPress());
+    await act(async () => host("task-question-option-0-1").props.onPress());
+    await act(async () => host("task-question-input-0").props.onChangeText("Extra"));
+    await act(async () => store.open(current));
+    expect(store.get()?.draft.selections[0]).toEqual([0, 1]);
+    expect(store.get()?.draft.texts[0]).toBe("Extra");
+    await act(async () => host("task-question-tab-1").props.onPress());
+    await act(async () => host("task-question-input-1").props.onChangeText("Hello"));
+    expect(store.get()?.draft.texts[1]).toBe("Hello");
+    await act(async () => host("task-question-submit").props.onPress());
+    expect(questionAnswers(send.mock.calls[0]![0].permission.questions!, send.mock.calls[0]![0].draft)).toEqual({ "Original header": "Keep, unchanged, Reject, Extra", Second: "Hello" });
+    expect(store.get()).toBeNull();
+    unsubscribe();
+  });
+  it("blocks a second surface while an answer is being submitted", async () => {
+    const current = card();
+    const store = createQuestionDialogStore();
+    let finish!: () => void;
+    const waiting = new Promise<void>((resolve) => { finish = resolve; });
+    await act(async () => { store.open(current); });
+    const sending = store.submit(() => waiting);
+    await act(async () => { tree = TestRenderer.create(<TaskInlineQuestions source={store} card={current} submit={async () => {}} theme={theme} language="zh" />); });
+    expect(host("task-question-option-0-0").props.disabled).toBe(true);
+    await act(async () => { finish(); await sending; });
+    expect(tree!.root.findAll((node) => typeof node.type === "string" && node.props.testID === "task-question-submit")).toHaveLength(0);
+  });
+  it("displays submission errors, resets drafts, and replaces a changed request", async () => {
+    const first = card();
+    const store = createQuestionDialogStore();
+    const send = vi.fn(async () => { throw new Error("offline"); });
+    const render = (current: TaskCard) => <TaskInlineQuestions source={store} card={current} submit={send} theme={theme} language="zh" />;
+    await act(async () => { tree = TestRenderer.create(render(first)); });
+    await act(async () => host("task-question-option-0-1").props.onPress());
+    await act(async () => host("task-question-submit").props.onPress());
+    expect(JSON.stringify(tree!.toJSON())).toContain("offline");
+    await act(async () => host("task-question-close").props.onPress());
+    expect(host("task-question-submit").props.disabled).toBe(true);
+    const next = { ...first, permission: { ...first.permission!, requestId: "new-request" } };
+    await act(async () => tree!.update(render(next)));
+    expect(host("task-question-submit").props.disabled).toBe(true);
+    expect(JSON.stringify(tree!.toJSON())).not.toContain("offline");
   });
 });

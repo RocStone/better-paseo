@@ -71,7 +71,8 @@ export function cardMenuSections(card: TaskCard, strings: ReturnType<typeof card
   ];
   const stop = actions.stop;
   const filters = actions.filters;
-  // Each row's second line names the value it filters to.
+  // Each row's second line names the value it filters to. Labels are not a
+  // card filter; the rest stay in FILTER_GROUP_ORDER (Agent, project, workspace).
   const filterRows: [CardFilterKind, string, string, string, string | null][] = [
     ["agent", strings.filterAgent, "Bot", "G", card.providerLabel || card.provider],
     ["project", strings.filterProject, "Box", "P", location.projectName],
@@ -103,7 +104,7 @@ export function cardMenuSections(card: TaskCard, strings: ReturnType<typeof card
     {
       key: "filter",
       items: filterItems.length
-        ? [{ key: "filter", label: strings.filter, icon: "ListFilter", shortcut: "F", submenu: [{ key: "filter", items: filterItems }] }]
+        ? [{ key: "filter", label: strings.filter, icon: "Filter", shortcut: "F", submenu: [{ key: "filter", items: filterItems }] }]
         : [],
     },
     {
