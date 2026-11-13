@@ -1474,12 +1474,15 @@ describe("TaskCardView rows", () => {
       const tree = await render(cardElement(card));
       const reason = tree.root.find((node) => (node.type as unknown) === "Text" && node.props.children === "已手动停止");
       expect(flat(reason.props.style).color).toBe("#6b6b75");
-      // The approved stopped mark: a solid square, on the title and the reason, never Lucide's hollow one or a dot.
-      expect(icons(tree.root)).not.toContain("Square");
+      const marks = tree.root.findAll((node) => typeof node.type === "string" && node.props.testID === "stopped-mark");
+      expect(marks).toHaveLength(2);
+      for (const mark of marks) {
+        expect(flat(mark.props.style)).toMatchObject({ backgroundColor: "rgba(107, 107, 117, 0.16)", alignItems: "center", justifyContent: "center" });
+        expect(flat(hostByTestId(mark, "stopped-mark-square").props.style).backgroundColor).toBe("#6b6b75");
+      }
       expect(icons(tree.root)).not.toContain("CircleX");
-      expect(flat(hostByTestId(tree.root, "task-card-reason-stopped").props.style)).toMatchObject({ backgroundColor: "#6b6b75", borderRadius: 2 });
-      const mark = hostByTestId(tree.root, "status-stopped");
-      expect(flat((mark.children[0] as ReactTestInstance).props.style)).toMatchObject({ backgroundColor: "#6b6b75" });
+      expect(hostByTestId(hostByTestId(tree.root, "status-stopped"), "stopped-mark")).toBeDefined();
+      expect(hostByTestId(hostByTestId(tree.root, "task-card-reason"), "stopped-mark")).toBeDefined();
       expect(tree.root.findAll((node) => typeof node.type === "string" && /^status-(unread|done)$/.test(String(node.props.testID)))).toHaveLength(0);
       await act(async () => tree.unmount());
       renderer = null;
@@ -1677,13 +1680,14 @@ describe("TaskCardView rows", () => {
     expect(all.some((text) => text.includes(" · npm run"))).toBe(false);
   });
 
-  it("renders pending questions at the next font size", async () => {
+  it.each([false, true])("matches pending question typography to the card title (compact: %s)", async (compact) => {
     const base = sample("sample-input");
     const card: TaskCard = { ...base, permission: { ...base.permission!, kind: "question", title: "A long question", summary: "More details" } };
-    const tree = await render(cardElement(card));
+    const tree = await render(cardElement(card, { compact }));
     const question = tree.root.find((node) => typeof node.type === "string" && node.props.numberOfLines === 2 && texts(node).includes("A long question · More details"));
+    const title = hostByTestId(tree.root, "task-card-title");
     expect(question.props.numberOfLines).toBe(2);
-    expect(flat(question.props.style)).toMatchObject({ fontSize: 14, lineHeight: 20 });
+    expect(flat(question.props.style)).toMatchObject({ fontSize: flat(title.props.style).fontSize, lineHeight: flat(title.props.style).lineHeight });
   });
 });
 
@@ -2115,7 +2119,7 @@ describe("TaskCardView actions", () => {
     const onUnread = vi.fn();
     const done = sample("sample-done");
     const tree = await render(cardElement(done, { onOpen: vi.fn(), onArchive: vi.fn(), onUnread }));
-    expect(texts(hostByTestId(tree.root, "task-card-control-row"))).toEqual(["标为未读", "归档", "打开"]);
+    expect(texts(hostByTestId(tree.root, "task-card-control-row"))).toEqual(["保持未读", "归档", "打开"]);
     expect(hostByTestId(tree.root, "task-card-unread").findAll((node) => typeof node.type === "string" && node.props.testID === "unread-icon")).toHaveLength(1);
     const lane = taskTokens(LIGHT).status.success;
     expect(flat(hostByTestId(tree.root, "task-card-unread").props.style)).toMatchObject({ backgroundColor: "transparent", borderColor: lane });
@@ -2124,7 +2128,7 @@ describe("TaskCardView actions", () => {
     expect(onUnread).toHaveBeenCalledWith(done);
 
     await act(async () => tree.update(cardElement(done, { compact: true, onOpen: vi.fn(), onArchive: vi.fn(), onUnread })));
-    expect(texts(hostByTestId(tree.root, "task-card-actions"))).toEqual(["标为未读", "归档", "打开"]);
+    expect(texts(hostByTestId(tree.root, "task-card-actions"))).toEqual(["保持未读", "归档", "打开"]);
     expect(flat(hostByTestId(tree.root, "task-card-unread").props.style).flexGrow).toBe(0);
 
     await act(async () => tree.update(cardElement(sample("sample-running"), { onUnread })));
@@ -2191,15 +2195,15 @@ describe("TaskCardView actions", () => {
     const controls = hostByTestId(tree.root, "task-card-control-row");
     expect(texts(controls)).toContain("打开");
     const question = hostByTestId(tree.root, "task-card-permission");
-    // The divider centers the label between its lines and keeps the wait at its right.
+    // The divider centers the label and wait together between its lines.
     const divider = hostByTestId(question, "task-card-question-divider");
-    expect(texts(divider)).toEqual(["待回答", "4m"]);
+    expect(texts(divider)).toEqual(["待回答", "·", "4m"]);
     expect(icons(divider)).toEqual(["Clock"]);
     expect(divider.findByType("Icon" as never).props.size).toBe(10);
     const waitText = divider.find((node) => typeof node.type === "string" && node.props.accessibilityLabel?.startsWith("已等待"));
     expect(flat(waitText.props.style).fontSize).toBe(11);
     const dividerParts = divider.children.filter((child): child is ReactTestInstance => typeof child !== "string");
-    expect(dividerParts.at(-1)!.props.testID).toBe("task-card-footer");
+    expect(hostByTestId(dividerParts[1]!, "task-card-footer")).toBeTruthy();
     expect(hostByTestId(question, "task-card-answer-row").findAll((node) => node.props.testID === "task-card-footer")).toHaveLength(0);
     const title = question.find((node) => typeof node.type === "string" && node.props.numberOfLines === 2 && texts(node).includes("Question"));
     expect(icons(title.parent!)).toEqual([]);
@@ -2624,9 +2628,9 @@ describe("TaskCardView actions", () => {
       filters: { state: { agent: true, workspace: false, project: false }, select },
     });
     const filter = sections.find((section) => section.key === "filter")!.items[0]!;
-    expect(filter).toMatchObject({ label: "筛选", icon: "ListFilter" });
+    expect(filter).toMatchObject({ label: "筛选", icon: "Filter" });
     const rows = filter.submenu![0]!.items;
-    // Agent, project, then workspace: from the widest scope to the narrowest.
+    // Agent, project, then workspace. A card has no single label, so Labels is not a row.
     expect(rows.map((item) => [item.label, item.detail, item.checked])).toEqual([
       ["只看此 Agent", card.providerLabel, true],
       ["只看此项目", card.location.projectName, false],
@@ -3450,7 +3454,7 @@ describe("TaskDetailCards", () => {
     const tree = await render(details(done, { onOpen: vi.fn(), archive, markUnread }));
     const order = hostByTestId(tree.root, "detail-actions").findAll((node) => typeof node.type === "string" && typeof node.props.testID === "string" && /^detail-(open|unread|archive)$/.test(node.props.testID)).map((node) => node.props.testID);
     expect(order).toEqual(["detail-open", "detail-unread", "detail-archive"]);
-    expect(texts(hostByTestId(tree.root, "detail-unread"))).toEqual(["标为未读"]);
+    expect(texts(hostByTestId(tree.root, "detail-unread"))).toEqual(["保持未读"]);
     expect(hostByTestId(tree.root, "detail-unread").findAll((node) => typeof node.type === "string" && node.props.testID === "unread-icon")).toHaveLength(1);
     expect(flat(hostByTestId(tree.root, "detail-unread").props.style)).toMatchObject({ borderColor: taskTokens(LIGHT).status.success });
     await act(async () => hostByTestId(tree.root, "detail-unread").props.onPress());
@@ -4320,7 +4324,7 @@ describe("TaskDetailCards", () => {
     const markUnread = { pending: vi.fn(() => false), press: vi.fn() };
     const marked = sample("sample-done");
     await act(async () => done.update(bar(marked, { archive, markUnread })));
-    expect(texts(hostByTestId(done.root, "detail-action-bar"))).toEqual(["标为未读", "归档", "打开"]);
+    expect(texts(hostByTestId(done.root, "detail-action-bar"))).toEqual(["保持未读", "归档", "打开"]);
     const columns = done.root.findAll((node) => typeof node.type === "string" && ["detail-bar-unread", "detail-bar-archive", "detail-bar-open"].includes(node.props.testID));
     expect(columns.map((node) => node.props.testID)).toEqual(["detail-bar-unread", "detail-bar-archive", "detail-bar-open"]);
     expect(hostByTestId(done.root, "detail-bar-unread").findAll((node) => typeof node.type === "string" && node.props.testID === "unread-icon")).toHaveLength(1);

@@ -2,7 +2,7 @@ import React from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import TestRenderer, { act, type ReactTestInstance } from "react-test-renderer";
 import "./helpers/quiet-renderer";
-import { measureHostTree } from "./helpers/yoga-host-layout";
+import { hostChildren, measureHostTree } from "./helpers/yoga-host-layout";
 import * as todoSummary from "../../client/tasks/data/todo-summary";
 
 vi.mock("react-native", async () => {
@@ -53,7 +53,7 @@ const host = vi.hoisted(() => ({
   settings: null as Record<string, unknown> | null,
   /** The automatic title settings; loading while null. */
   titleSettings: null as Record<string, unknown> | null,
-  counts: null as { running: number; needsInput: number; review: number; done: number; hidden?: import("../../client/tasks/model").TaskCard[] } | null,
+  counts: null as { running: number; needsInput: number; review: number; done: number; hidden?: import("../../client/tasks/model").TaskCard[]; questions?: import("../../client/tasks/model").TaskCard[] } | null,
   /** The filters the sidebar row last counted with. */
   countScope: null as unknown,
   canStop: false,
@@ -143,7 +143,7 @@ import { CardCell, RollingCount, RollingTotal, SlashMark, WindowSegments } from 
 import { createLaneMotionStore, LaneMotionLayer, LaneMotionProvider } from "../../client/tasks/board/lane-motion";
 import { TasksSidebarEntry } from "../../client/tasks/board/sidebar-entry";
 import { contributeTasks } from "../../client/tasks/contribute";
-import { boardClearCount, encodeBoardParams, lastBoardParams, rememberBoardParams, rememberBoardRoute, rememberCollapsed, rememberedCollapsed, requestBoardClear, resetBoardSessions, EMPTY_PARAMS, type BoardParams } from "../../client/tasks/board/params";
+import { boardClearCount, consumeBoardOpen, encodeBoardParams, lastBoardParams, rememberBoardParams, rememberBoardRoute, rememberCollapsed, rememberedCollapsed, requestBoardClear, requestBoardOpen, resetBoardSessions, EMPTY_PARAMS, type BoardParams } from "../../client/tasks/board/params";
 import { TabletToolbar } from "../../client/tasks/board/tablet-toolbar";
 import { DesktopFilterBar as DesktopFilterBarMemo, DesktopToolbar as DesktopToolbarMemo } from "../../client/tasks/board/filter-bar";
 import { LaneWidthMark } from "../../client/tasks/board/lane-width-mark";
@@ -524,16 +524,17 @@ describe("search coverage render isolation", () => {
       let request!: Promise<void>;
       act(() => { request = firstPromptStoreFor(paseo as never).request(task.id); });
       expect(host.rowRenders).toBe(before);
-      expect(textOf(hostsById("search-coverage-loaded")[0]!)).toBe(BOARD_STRINGS.en.searchCoverage.loaded(0));
+      expect(textOf(hostsById("search-coverage-loaded")[0]!)).toBe(phone ? BOARD_STRINGS.en.searchCoverage.loaded(0) : "0");
       await act(async () => { finish(); await request; });
       // A failed read is neither counted nor offered a retry; the notice keeps its loaded-count wording.
-      expect(textOf(hostsById("search-coverage-loaded")[0]!)).toBe(BOARD_STRINGS.en.searchCoverage.loaded(0));
+      expect(textOf(hostsById("search-coverage-loaded")[0]!)).toBe(phone ? BOARD_STRINGS.en.searchCoverage.loaded(0) : "0");
       expect(hostsById("search-coverage-failure")).toHaveLength(0);
       expect(hostsById("search-coverage-retry")).toHaveLength(0);
       if (phone) {
         const summary = hostsById("phone-search-summary")[0]!;
         expect(summary.props.horizontal).toBe(true);
-        expect(textOf(summary)).toContain("coverage probe");
+        expect(hostsById("search-query-chip").map(textOf)).toEqual(["「coverage」", "「probe」"]);
+        expect(hostsById("search-query-chips")[0]!.type).toBe("View");
       }
       expect(host.rowRenders).toBe(before);
       expect(hostsById("tasks-search-coverage")).toHaveLength(0);
@@ -618,7 +619,7 @@ describe("Tasks search coverage and centred toolbar", () => {
     (globalThis as { __rnMockOS?: string }).__rnMockOS = "web";
     act(() => { renderer = TestRenderer.create(screen(false, { q: "status" })); });
     layOut(800);
-    expect(textOf(hostsById("desktop-toolbar-search-summary")[0]!)).toContain("Contains「status」");
+    expect(textOf(hostsById("desktop-toolbar-search-summary")[0]!)).toContain("「status」");
     act(() => hostsById("desktop-search-toggle")[0]!.props.onPress());
     expect(hostsById("desktop-toolbar-search")).toHaveLength(1);
     const summary = hostsById("desktop-toolbar-search-summary")[0]!;
@@ -626,7 +627,7 @@ describe("Tasks search coverage and centred toolbar", () => {
     expect(textOf(summary)).not.toContain("status");
     expect(textOf(summary)).toContain("Clear filters");
     act(() => hostsById("desktop-search-toggle")[0]!.props.onPress());
-    expect(textOf(hostsById("desktop-toolbar-search-summary")[0]!)).toContain("Contains「status」");
+    expect(textOf(hostsById("desktop-toolbar-search-summary")[0]!)).toContain("「status」");
   });
 
   it("puts the loaded count inside the desktop search field instead of a query chip", async () => {
@@ -768,25 +769,25 @@ describe("Tasks search coverage and centred toolbar", () => {
 
   it.each(["web", "ios", "android"])("keeps %s separate-row search independent of lane width", async (os) => {
     (globalThis as { __rnMockOS?: string }).__rnMockOS = os;
-    act(() => { renderer = TestRenderer.create(screen(false, {}, { ...(theme as object), typography: { fontSize: { ui: 21 } } })); });
+    act(() => { renderer = TestRenderer.create(screen(false, { q: "needle" }, { ...(theme as object), typography: { fontSize: { ui: 21 } } })); });
     layOut(600);
     const prefix = os === "web" ? "desktop" : "tablet";
     const controller = () => renderer!.root.findByType(os === "web" ? DesktopToolbar : TabletToolbar).props.board;
-    act(() => hostsById(`${prefix}-search-toggle`)[0]!.props.onPress());
+    act(() => (hostsById(`${prefix}-search-toggle`)[0] ?? hostsById("search-query-edit")[0])!.props.onPress());
     for (const [size, expected] of [["narrow", 244], ["default", 284], ["wide", 300]] as const) {
       await act(async () => { controller().setLaneWidth(size); });
       expect(StyleSheet.flatten(hostsById("lane-surface-running")[0]!.props.style).width).toBe(expected);
       const row = hostsById(`${prefix}-search-row`)[0]!;
       const field = hostsById(`${prefix}-toolbar-search`)[0]!;
-      expect(StyleSheet.flatten(field.props.style).width).toBe(320);
+      expect(StyleSheet.flatten(field.props.style)).toMatchObject(os === "web" ? { width: 320 } : { flex: 1, flexBasis: 0 });
       const frame = measureHostTree(row, { width: 600 }).get(field)!;
-      expect(frame.width).toBe(320);
+      expect(frame.width).toBe(os === "web" ? 320 : 480);
       expect(frame.left).toBe(lanesScroll().props.contentContainerStyle.paddingLeft);
     }
     layOut(480);
     const field = hostsById(`${prefix}-toolbar-search`)[0]!;
-    expect(StyleSheet.flatten(field.props.style).width).toBe(320);
-    expect(measureHostTree(hostsById(`${prefix}-search-row`)[0]!, { width: 480 }).get(field)!.width).toBe(320);
+    expect(StyleSheet.flatten(field.props.style)).toMatchObject(os === "web" ? { width: 320 } : { flex: 1, flexBasis: 0 });
+    expect(measureHostTree(hostsById(`${prefix}-search-row`)[0]!, { width: 480 }).get(field)!.width).toBe(os === "web" ? 320 : 360);
   });
 
   it.each(["web", "ios", "android"].flatMap((os) => (["en", "zh"] as const).map((language) => ({ os, language }))))("sizes $os/$language search with the lanes across layouts and filter measurements", ({ os, language }) => {
@@ -802,7 +803,8 @@ describe("Tasks search coverage and centred toolbar", () => {
       const frames = measureHostTree(bar, { width });
       expect(frames.get(field)!.width).toBeCloseTo(expected, 0);
       const group = frames.get(hostsById(`${prefix}-toolbar-search-group`)[0]!)!;
-      expect(group.left + group.width).toBeLessThanOrEqual(frames.get(hostsById(`${prefix}-toolbar-total`)[0]!)!.left);
+      expect(group.left + group.width).toBeLessThanOrEqual(frames.get(hostsById(`${prefix}-toolbar-${os === "web" ? "total" : "end"}`)[0]!)!.left);
+      expect(hostsById(`${prefix}-toolbar-total`)).toHaveLength(os === "web" ? 1 : 0);
       expect(hostsById(`${prefix}-search-toggle`)).toHaveLength(0);
       expect(hostsById(`${prefix}-search-row`)).toHaveLength(0);
     }
@@ -821,15 +823,16 @@ describe("Tasks search coverage and centred toolbar", () => {
     expect(hostsById(`${prefix}-toolbar-search`)).toHaveLength(0);
     const actions = hostsById(`${prefix}-toolbar-end`)[0]!.findAll((node) => (node.type as unknown) === "Pressable").map((node) => node.props.testID);
     act(() => hostsById(`${prefix}-search-toggle`)[0]!.props.onPress());
-    const row = hostsById(`${prefix}-search-row`)[0]!;
+    const row = hostsById(`${prefix}-search-row`)[0];
+    const container = row ?? hostsById(`${prefix}-toolbar`)[0]!;
     const field = hostsById(`${prefix}-toolbar-search`)[0]!;
-    expect(hostParentOf(hostsById(`${prefix}-toolbar-search-group`)[0]!)).toBe(row);
+    expect(hostParentOf(hostsById(`${prefix}-toolbar-search-group`)[0]!)).toBe(row ?? hostsById(`${prefix}-toolbar-start`)[0]);
     const input = field.find((node) => (node.type as unknown) === "TextInput");
     expect(input.props.autoFocus).toBe(true);
-    expect(hostsById(`${prefix}-toolbar-total`)).toHaveLength(1);
+    expect(hostsById(`${prefix}-toolbar-total`)).toHaveLength(os === "web" ? 1 : 0);
     expect(hostsById(`${prefix}-toolbar-end`)[0]!.findAll((node) => (node.type as unknown) === "Pressable").map((node) => node.props.testID)).toEqual(actions);
-    const frames = measureHostTree(row, { width });
-    expect(frames.get(field)!.width).toBeLessThanOrEqual(320);
+    const frames = measureHostTree(container, { width });
+    expect(frames.get(field)!.width).toBeLessThanOrEqual(os === "web" ? 320 : width - 48);
     expect(frames.get(field)!.width).toBeGreaterThan(100);
     for (const node of [field, hostsById("search-full-conversation-toggle")[0]!, hostsById(`${prefix}-search-close`)[0]!]) {
       const frame = frames.get(node)!;
@@ -840,7 +843,7 @@ describe("Tasks search coverage and centred toolbar", () => {
     act(() => hostsById(`${prefix}-search-close`)[0]!.props.onPress());
     expect(hostsById(`${prefix}-toolbar-search`)).toHaveLength(0);
     expect(lastBoardParams("host-1").query).toBe("needle");
-    act(() => hostsById(`${prefix}-search-toggle`)[0]!.props.onPress());
+    act(() => (hostsById(`${prefix}-search-toggle`)[0] ?? hostsById("search-query-edit")[0])!.props.onPress());
     expect(hostsById(`${prefix}-toolbar-search`)[0]!.find((node) => (node.type as unknown) === "TextInput").props.value).toBe("needle");
   });
 
@@ -857,7 +860,7 @@ describe("Tasks search coverage and centred toolbar", () => {
     expect(hostsById(`${prefix}-search-toggle`)).toHaveLength(0);
     expect(hostsById(`${prefix}-toolbar-search`)[0]!.find((node) => (node.type as unknown) === "TextInput").props.value).toBe("needle");
     act(() => renderer!.update(screen(false, {}, boardTheme(21))));
-    expect(hostsById(`${prefix}-search-row`)).toHaveLength(os === "web" ? 0 : 1);
+    expect(hostsById(`${prefix}-search-row`)).toHaveLength(0);
     expect(hostsById(`${prefix}-toolbar-search`)[0]!.find((node) => (node.type as unknown) === "TextInput").props.value).toBe("needle");
     act(() => hostsById(`${prefix}-search-${os === "web" ? "toggle" : "close"}`)[0]!.props.onPress());
     layOut(1600);
@@ -1517,6 +1520,8 @@ describe("Tasks board, desktop", () => {
   });
 
   it("uses host UI typography directly without reading persisted appearance", () => {
+    // Language can read the same key; select it explicitly to isolate appearance.
+    updateEnhancerPreferences({ language: "en" });
     const getItem = vi.fn(() => JSON.stringify({ uiBaseFontSize: 10 }));
     vi.stubGlobal("localStorage", { getItem });
     try {
@@ -2496,6 +2501,7 @@ describe("Tasks board, desktop", () => {
     if (os === "ios") toggleSidebarControl();
     const layout = (node: ReactTestInstance, width: number) => act(() => node.props.onLayout({ nativeEvent: { layout: { x: 0, y: 0, width, height: 36 } } }));
     const tabs = () => renderer!.root.findAll((node) => (node.type as unknown) === "Pressable" && node.props.accessibilityRole === "tab");
+    expect(tabs().map((tab) => tab.props.accessibilityLabel)).toEqual((["agent", "label", "project", "workspace"] as const).map((kind) => BOARD_STRINGS[language].sidebar.groups[kind]));
     const labels = () => hostsById("sidebar-group-tab-label");
     const measureTab = (tab: ReactTestInstance, width: number) => layout(tab.find((node) => (node.type as unknown) === "Text" && node.props.testID === "sidebar-group-tab-measure"), width);
     // The tabs share their row equally, so it alone is laid out: four tabs `width` wide.
@@ -3782,9 +3788,11 @@ describe("Tasks board, desktop", () => {
     expect(cards()[0]!.props.onUnarchive).toEqual(expect.any(Function));
   });
 
-  it("does not open an archived task, whose tab Paseo would drop for another, and says why", () => {
+  it("does not open an archived task, whose tab Paseo would drop for another, and says why", async () => {
     const handle = (data as unknown as { __handle: { byId: Map<string, unknown> } }).__handle;
     const done = handle.byId.get("sample-done") as Record<string, unknown>;
+    const clearer = vi.fn(async () => {});
+    data.setUnreadClearer(clearer);
     handle.byId.set("archived-task", { ...done, id: "archived-task", lane: "archived", status: "archived", archived: "agent" });
     try {
       act(() => {
@@ -3795,10 +3803,17 @@ describe("Tasks board, desktop", () => {
       act(() => card.props.onOpen("archived-task"));
       expect(openAgent).not.toHaveBeenCalled();
       expect(host.toast).toHaveBeenCalledWith("Unarchive this task to open it in Paseo");
-      act(() => card.props.onOpen("sample-done"));
+      expect(clearer).not.toHaveBeenCalled();
+      await act(async () => {
+        card.props.onOpen("sample-done");
+        await Promise.resolve();
+      });
       expect(openAgent).toHaveBeenCalledWith({ agentId: "sample-done" });
+      // Opened is seen: a task marked unread does not come back to review.
+      expect(clearer).toHaveBeenCalledWith(["sample-done"]);
     } finally {
       handle.byId.delete("archived-task");
+      data.setUnreadClearer(null);
     }
   });
 
@@ -4234,7 +4249,7 @@ describe("Tasks board, desktop", () => {
     const controls = () => view("filter-bar-controls");
     const group = () => hostParentOf(controls())!;
     const words = () => controls().findAll((node) => (node.type as unknown) === "Text").map(textOf);
-    expect(words()).toEqual(["Agent", "Project", "Workspace", "Labels"]);
+    expect(words()).toEqual(["Agent", "Labels", "Project", "Workspace"]);
     const dividers = () => ["board-switches-divider", "lane-width-divider", "done-window-divider"].flatMap(hostsById);
     expect(dividers()).toHaveLength(3);
 
@@ -4246,7 +4261,7 @@ describe("Tasks board, desktop", () => {
     expect(dividers()).toHaveLength(0);
     expect(view("filter-bar-end").findAll((node) => (node.type as unknown) === "Text" && textOf(node) === "Sort")).toHaveLength(0);
     const named = (bar: ReactTestInstance) => bar.findAll((node) => (node.type as unknown) === "Pressable").map((node) => node.props.accessibilityLabel);
-    expect(named(controls())).toEqual(["Agent", "Project", "Workspace", "Labels"]);
+    expect(named(controls())).toEqual(["Agent", "Labels", "Project", "Workspace"]);
     expect(named(view("filter-bar-end"))).toContain("Sort");
 
     // Restoring five labels also restores each chevron and rectangular padding: 5 * (40 + 27) = 335.
@@ -4254,7 +4269,7 @@ describe("Tasks board, desktop", () => {
     expect(hidden.props["aria-hidden"]).toBe(true);
     expect(StyleSheet.flatten(hidden.props.style)).toMatchObject({ position: "absolute", opacity: 0 });
     const dropped = hidden.findAll((node) => (node.type as unknown) === "Text");
-    expect(dropped.map(textOf)).toEqual(["Agent", "Project", "Workspace", "Labels", "Sort"]);
+    expect(dropped.map(textOf)).toEqual(["Agent", "Labels", "Project", "Workspace", "Sort"]);
     lay(controls(), { width: 300 });
     lay(view("filter-bar-end"), { width: 300 });
     for (const text of dropped) act(() => text.props.onLayout({ nativeEvent: { layout: { x: 0, y: 0, width: 40, height: 18 } } }));
@@ -5399,7 +5414,7 @@ describe("F2: tablet overlays outside toolbar AX bounds", () => {
     expect(hostsById("tablet-view-overlay")).toHaveLength(0);
   });
 
-  it.each([["android", 480, 14], ["ios", 600, 21]] as const)("%s at %i pt/UI%i opens search below the toolbar with autofocus, clear and dismissal", (os, width, base) => {
+  it.each([["android", 320, 14], ["ios", 480, 21]] as const)("%s at %i pt/UI%i opens search below the toolbar with autofocus, clear and dismissal", (os, width, base) => {
     mount(os, width, base);
     const height = style(bar()).height;
     act(() => hostsById("tablet-search-toggle")[0]!.props.onPress());
@@ -5411,12 +5426,12 @@ describe("F2: tablet overlays outside toolbar AX bounds", () => {
     expect(hostsById("tablet-search-toggle")).toHaveLength(1);
     expect(style(hostsById("tablet-search-toggle")[0]!).backgroundColor).toBe("transparent");
     expect(hostsById("tablet-toolbar-start")[0]!.children.map((node) => typeof node === "string" ? node : node.props.testID)).toEqual(["tablet-search-toggle"]);
-    expect(search().findAll((node) => (node.type as unknown) === "Icon" && node.props.name === "Search")).toHaveLength(0);
-    expect(style(search())).toMatchObject({ height: Math.round(40 * base / 14) - 8, width: 320, flexShrink: 1, minWidth: 0 });
+    expect(search().findAll((node) => (node.type as unknown) === "Icon" && node.props.name === "Search")).toHaveLength(1);
+    expect(style(search())).toMatchObject({ height: Math.round(40 * base / 14) - 8, flex: 1, flexBasis: 0, minWidth: 0 });
     expect(style(search()).position).toBeUndefined();
-    expect(hostsById("tablet-toolbar-total")).toHaveLength(1);
+    expect(hostsById("tablet-toolbar-total")).toHaveLength(0);
     expect(style(hostsById("tablet-toolbar-start")[0]!).minWidth).toBe(style(end()).minWidth);
-    expect(style(end())).toMatchObject({ flex: 1, flexBasis: 0 });
+    expect(style(end())).toMatchObject({ flex: 0, flexBasis: "auto" });
     expect(hostsById("toolbar-filters")).toHaveLength(1);
     expect(hostsById("tablet-view")).toHaveLength(1);
     const input = () => search().find((node) => (node.type as unknown) === "TextInput");
@@ -5448,7 +5463,7 @@ describe("F2: tablet overlays outside toolbar AX bounds", () => {
   it.each([["ios", 600], ["ios", 800], ["android", 600], ["android", 800]] as const)("%s at %i keeps the search compact and dismisses only an empty query", (os, width) => {
     mount(os, width);
     act(() => hostsById("tablet-search-toggle")[0]!.props.onPress());
-    expect(style(hostsById("tablet-toolbar-search")[0]!).width).toBe(320);
+    expect(style(hostsById("tablet-toolbar-search")[0]!)).toMatchObject({ flex: 1, flexBasis: 0 });
     expect(hostsById("tablet-toolbar-backdrop")).toHaveLength(1);
     expect(style(hostsById("tablet-toolbar-backdrop")[0]!).zIndex).toBeLessThan(style(bar()).zIndex);
     act(() => hostsById("search-full-conversation-toggle")[0]!.props.onPress());
@@ -5763,7 +5778,7 @@ describe("Tasks board, tablet filters", () => {
   it.each(["en", "zh"] as const)("reserves a complete centred count across count changes in %s", (language) => {
     updateEnhancerPreferences({ language });
     act(() => { renderer = TestRenderer.create(screen(false)); });
-    layOut(1000);
+    layOut(800);
     const props = renderer!.root.findByType(TabletToolbar).props as React.ComponentProps<typeof TabletToolbar>;
     let slotStyle: unknown;
     let searchStyle: unknown;
@@ -5941,7 +5956,7 @@ describe("Tasks board, tablet filters", () => {
     for (const id of ["tablet-toolbar", "tablet-toolbar-end"]) {
       expect(hostsById(id)[0]!.props.pointerEvents).toBe("box-none");
     }
-    expect(hostsById("tablet-toolbar-total")[0]!.props.pointerEvents).toBe("none");
+    expect(hostsById("tablet-toolbar-total")).toHaveLength(hostsById("tablet-toolbar-search").length ? 0 : 1);
     act(() => hostsById("tablet-toolbar-backdrop")[0]!.props.onPress());
     expect(hostsById(panel)).toHaveLength(0);
     expect(hostsById("tablet-toolbar-backdrop")).toHaveLength(0);
@@ -7150,9 +7165,10 @@ describe("Tasks board, phone", () => {
     expect(at(BOARD_STRINGS.en.emptyGroups.row)).toBeGreaterThanOrEqual(0);
     expect(at(BOARD_STRINGS.en.emptyGroups.row)).toBeLessThan(at("Time range"));
     expect(at("Time range")).toBeLessThan(at("Agent"));
-    expect(at("Agent")).toBeLessThan(at("Workspace"));
-    expect(at("Workspace")).toBeLessThan(at("Labels"));
-    expect(at("Labels")).toBeLessThan(at("Sort"));
+    expect(at("Agent")).toBeLessThan(at("Labels"));
+    expect(at("Labels")).toBeLessThan(at("Project"));
+    expect(at("Project")).toBeLessThan(at("Workspace"));
+    expect(at("Workspace")).toBeLessThan(at("Sort"));
     const range = () => hostsById("filter-sheet-range-toggle")[0]!;
     expect(range().props.accessibilityState.expanded).toBe(true);
     expect(hostsById("filter-sheet-range-content")[0]!.props.accessibilityElementsHidden).toBe(false);
@@ -7717,6 +7733,72 @@ describe("Tasks sidebar entry", () => {
     expect(textOf(row)).toBe(text);
   });
 
+  it("opens a pending question directly from the needs-input count", () => {
+    const sample = (data as unknown as { __handle: { lanes: { needs_input: { cards: TaskCard[] } } } }).__handle.lanes.needs_input.cards[0]!;
+    const card = { ...sample, permission: { requestId: "q1", kind: "question" as const, name: "AskUserQuestion", title: "Question", summary: "Choose", actions: [], remaining: 0, questions: [{ header: "One", question: "Choose", options: [{ label: "Yes" }], multiSelect: false, allowOther: false, allowEmpty: false }] } };
+    host.counts = { needsInput: 1, running: 0, review: 0, done: 0, questions: [card] };
+    const openScreen = vi.fn();
+    const row = entry(null, openScreen);
+    const stopPropagation = vi.fn();
+    act(() => row.findByProps({ testID: "sidebar-open-questions" }).props.onPress({ stopPropagation }));
+    expect(stopPropagation).toHaveBeenCalledOnce();
+    expect(openScreen).not.toHaveBeenCalled();
+    expect(renderer!.root.findAllByProps({ testID: "task-question-dialog" }).length).toBeGreaterThan(0);
+    expect(textOf(renderer!.root)).toContain("Choose");
+  });
+
+  it.each([false, true])("opens the question's agent via the board only once (provider subagent: %s)", (subagent) => {
+    const sample = (data as unknown as { __handle: { lanes: { needs_input: { cards: TaskCard[] } } } }).__handle.lanes.needs_input.cards[0]!;
+    const card = { ...sample, id: "question-agent", ...(subagent ? { subagent: { subtitle: null }, parent: { id: "parent-agent", title: "Parent", missing: false, archived: false } } : {}), permission: { requestId: "q1", kind: "question" as const, name: "AskUserQuestion", title: "Question", summary: "Choose", actions: [], remaining: 0, questions: [{ header: "One", question: "Choose", options: [{ label: "Yes" }], multiSelect: false, allowOther: false, allowEmpty: false }] } };
+    host.counts = { needsInput: 1, running: 0, review: 0, done: 0, questions: [card] };
+    const openScreen = vi.fn();
+    const row = entry(null, openScreen, true);
+    act(() => row.findByProps({ testID: "sidebar-open-questions" }).props.onPress({ stopPropagation() {} }));
+    act(() => renderer!.root.findByProps({ testID: "task-question-open" }).props.onPress());
+    expect(renderer!.root.findAllByProps({ testID: "task-question-dialog" })).toHaveLength(0);
+    const route = openScreen.mock.calls[0]![0] as { screenId: string; params: Record<string, string> };
+    expect(route.screenId).toBe("tasks");
+    act(() => { renderer!.unmount(); renderer = TestRenderer.create(screen(true, route.params)); });
+    expect(openAgent).toHaveBeenCalledExactlyOnceWith({ agentId: subagent ? "parent-agent" : "question-agent" });
+    act(() => { renderer!.unmount(); renderer = TestRenderer.create(screen(true, route.params)); });
+    expect(openAgent).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps open requests scoped to their host and ignores replaced routes", () => {
+    const old = requestBoardOpen("host-1", "first");
+    const next = requestBoardOpen("host-1", "second");
+    const other = requestBoardOpen("host-2", "third");
+    expect(consumeBoardOpen("host-1", old)).toBeUndefined();
+    expect(consumeBoardOpen("host-2", next)).toBeUndefined();
+    expect(consumeBoardOpen("host-1", next)).toBe("second");
+    expect(consumeBoardOpen("host-1", next)).toBeUndefined();
+    expect(consumeBoardOpen("host-2", other)).toBe("third");
+  });
+
+  it("reports when the board's client cannot navigate", () => {
+    const token = requestBoardOpen("host-1", "question-agent");
+    act(() => { renderer = TestRenderer.create(React.createElement(TasksBoardScreen, { theme, host: { id: "host-1", label: "Local" }, layout: { compact: true, platform: "ios" }, params: { openRequest: token } })); });
+    expect(host.toast).toHaveBeenCalledWith("Cannot open task: navigation is unavailable in this client");
+    expect(openAgent).not.toHaveBeenCalled();
+    expect(consumeBoardOpen("host-1", token)).toBeUndefined();
+  });
+
+  it("clears the unread mark of a task the sidebar opens through the board", async () => {
+    const clearer = vi.fn(async () => {});
+    data.setUnreadClearer(clearer);
+    try {
+      const token = requestBoardOpen("host-1", "sample-done");
+      await act(async () => {
+        renderer = TestRenderer.create(React.createElement(TasksBoardScreen, { theme, host: { id: "host-1", label: "Local" }, layout: { compact: true, platform: "ios" }, params: { openRequest: token }, navigation: { openAgent, openWorkspace: vi.fn() } } as never));
+        await Promise.resolve();
+      });
+      expect(openAgent).toHaveBeenCalledWith({ agentId: "sample-done" });
+      expect(clearer).toHaveBeenCalledWith(["sample-done"]);
+    } finally {
+      data.setUnreadClearer(null);
+    }
+  });
+
   it("draws needs input, running and review in that order with their lane icons", () => {
     host.counts = { running: 3, needsInput: 1, review: 2, done: 4 };
     const row = entry(null);
@@ -7783,6 +7865,26 @@ describe("Tasks sidebar entry", () => {
     expect(scroll.findAllByProps({ testID: "hidden-tasks-actions" })).toHaveLength(0);
     expect(modal.findByType(Modal.Content).props.scrollable).toBe(false);
     expect(modal.findAllByProps({ testID: "hidden-tasks-clear-filters" }).length).toBeGreaterThan(0);
+  });
+
+  it("shows the hidden-task footer shadow only while content remains below", () => {
+    const card = (data as unknown as { __handle: { lanes: { running: { cards: TaskCard[] } } } }).__handle.lanes.running.cards[0]!;
+    host.settings = { ...DEFAULT_TASKS_SETTINGS, sidebar: { count: "all" } };
+    host.counts = { needsInput: 0, running: 0, review: 0, done: 0, hidden: [card] };
+    const row = entry(null);
+    act(() => row.findAll((node) => node.props.testID === "hidden-tasks-count")[0]!.props.onPress());
+    const scroll = () => renderer!.root.findByProps({ testID: "hidden-tasks-scroll" });
+    const shadow = () => StyleSheet.flatten(renderer!.root.findByProps({ testID: "hidden-tasks-actions" }).props.style).boxShadow;
+    act(() => { scroll().props.onLayout({ nativeEvent: { layout: { height: 200 } } }); scroll().props.onContentSizeChange(300, 150); });
+    expect(shadow()).toBeUndefined();
+    act(() => scroll().props.onContentSizeChange(300, 400));
+    expect(shadow()).toBeTruthy();
+    act(() => scroll().props.onScroll({ nativeEvent: { contentOffset: { y: 200 } } }));
+    expect(shadow()).toBeUndefined();
+    act(() => scroll().props.onScroll({ nativeEvent: { contentOffset: { y: 80 } } }));
+    expect(shadow()).toBeTruthy();
+    act(() => scroll().props.onContentSizeChange(300, 150));
+    expect(shadow()).toBeUndefined();
   });
 
   it("keeps the phone hidden-task action outside the scrolling list", () => {
@@ -8177,4 +8279,20 @@ describe("Tasks sidebar filter options", () => {
     expect(await during(() => renderer!.update(screen(false)))).toBe(0);
     useTasks.mockRestore();
   });
+});
+
+it.each((["ios", "android"] as const).flatMap((os) => ["needle", "needle 中文"].map((query) => [os, query] as const)))("%s phone board keeps the real search summary height for %s", async (os, query) => {
+  (globalThis as { __rnMockOS?: string }).__rnMockOS = os;
+  await act(async () => { renderer = TestRenderer.create(screen(true, { q: query }, { ...(theme as object), typography: { fontSize: { ui: 14 } } })); });
+  act(() => { vi.advanceTimersByTime(200); });
+  expect(hostsById("phone-search-reveal")).toHaveLength(1);
+  const summary = hostsById("phone-search-summary")[0]!;
+  const chip = hostsById("search-query-chip")[0]!;
+  expect(summary.findAll((node) => node === chip)).toHaveLength(1);
+  const frames = measureHostTree(summary, { width: 390 });
+  expect(summary.props.contentContainerStyle).toMatchObject({ flexDirection: "row", alignItems: "center" });
+  // rn-mock omits ScrollView's native content view. Its actual row height is
+  // the tallest rendered child, rather than the mock's default column sum.
+  expect(Math.max(...hostChildren(summary).map((child) => frames.get(child)!.height))).toBe(36);
+  expect(frames.get(chip)!.height).toBe(36);
 });

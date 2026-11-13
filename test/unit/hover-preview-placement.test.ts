@@ -51,6 +51,29 @@ describe("question option expansion", () => {
 });
 
 describe("toolbar layer window edges", () => {
+  it.each([262, 322, 382])("matches a %s px task card and follows its resize", (width) => {
+    let resize!: () => void;
+    let cardWidth = width;
+    const observe = vi.fn();
+    const view = { innerWidth: 1200, innerHeight: 600, addEventListener: vi.fn(), removeEventListener: vi.fn(), ResizeObserver: class {
+      constructor(callback: () => void) { resize = callback; }
+      observe = observe;
+      disconnect() {}
+    } };
+    const panel = { ownerDocument: { defaultView: view }, style: {} as Record<string, string>, getAttribute: () => null,
+      setAttribute: vi.fn(), removeAttribute: vi.fn(), showPopover: vi.fn(), hidePopover: vi.fn(), matches: () => true,
+      getBoundingClientRect() { return { left: 120, width: Number.parseFloat(this.style.width ?? "") || 200, height: 100 }; } };
+    const anchor = { getBoundingClientRect: () => ({ left: 120, top: 100, bottom: 140 }) };
+    const card = { getBoundingClientRect: () => ({ left: 100, width: cardWidth }) };
+    const release = openToolbarDetailsLayer(panel, anchor, "below", card);
+    expect(panel.style.width).toBe(`${width}px`);
+    expect(panel.style.left).toBe("100px");
+    expect(observe).toHaveBeenCalledWith(card);
+    cardWidth = width + 20;
+    resize();
+    expect(panel.style.width).toBe(`${width + 20}px`);
+    release();
+  });
   it.each([
     { left: 0, top: 0, expectedLeft: "8px", expectedTop: "40px" },
     { left: 780, top: 0, expectedLeft: "492px", expectedTop: "40px" },
@@ -65,6 +88,31 @@ describe("toolbar layer window edges", () => {
     const release = openToolbarDetailsLayer(panel, anchor, "below");
     expect(panel.style.left).toBe(expectedLeft);
     expect(panel.style.top).toBe(expectedTop);
+    release();
+  });
+  it("reports placement changes when the window no longer fits below the anchor", () => {
+    let reposition!: () => void;
+    let top = 100;
+    const view = { innerWidth: 800, innerHeight: 600, addEventListener: vi.fn(), removeEventListener: vi.fn(), ResizeObserver: class {
+      constructor(callback: () => void) { reposition = callback; }
+      observe() {}
+      disconnect() {}
+    } };
+    const panel = { ownerDocument: { defaultView: view }, style: {} as Record<string, string>, getAttribute: () => null,
+      setAttribute: vi.fn(), removeAttribute: vi.fn(), showPopover: vi.fn(), hidePopover: vi.fn(), matches: () => true,
+      getBoundingClientRect: () => ({ left: 0, width: 300, height: 100 }) };
+    const anchor = { getBoundingClientRect: () => ({ left: 0, top, bottom: top + 40 }) };
+    const onPlacement = vi.fn();
+    const release = openToolbarDetailsLayer(panel, anchor, "below", undefined, onPlacement);
+    expect(onPlacement).toHaveBeenLastCalledWith("below");
+    top = 570;
+    reposition();
+    expect(panel.style.top).toBe("470px");
+    expect(onPlacement).toHaveBeenLastCalledWith("above");
+    top = 0;
+    reposition();
+    expect(panel.style.top).toBe("40px");
+    expect(onPlacement).toHaveBeenLastCalledWith("below");
     release();
   });
 });

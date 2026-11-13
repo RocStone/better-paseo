@@ -385,6 +385,10 @@ Every tool call, notice and grouped call is one disclosure row (`DISCLOSURE_HEAD
 - Code blocks: `surfaceCode`, radius 6, no border. A 30 header (32 native) carries the language,
   Wrap and Copy (24 buttons; Copy shows a check for 1.2 s). Blocks start wrapped and fold after 12
   lines; the document variant numbers blocks of 4 or more lines.
+- Timeline block header actions whose icons already distinguish two states, including Wrap, use
+  the same resting background in both states, without a persistent selected fill. Keep normal
+  hover, press and keyboard focus feedback and the control's accessibility state. Copy retains
+  its temporary success icon.
 - Tables: a 1 pt frame, radius 6; the header row on `surface2` with muted weight-500 text;
   all-numeric columns right-aligned; sideways scroll with the indicator shown only while
   scrolling. The copy control is a 30 square at the top left (radius 12); on the web it opens to
@@ -939,8 +943,10 @@ apply to all three.
   Phones keep their existing Search button and expandable pill below the header.
 - Wide desktop: the top row ends with Show groups with no tasks, then the sidebar
   switch. The filter bar's right side orders Collapse empty lanes, Subtasks, Archived, Lane
-  width, Time range, then Sort. Agent, Project and Workspace menus also offer the empty-groups
-  switch at their foot; Labels does not. When the filter bar folds into the header, keep
+  width, Time range, then Sort. The filter buttons order Agent, Labels, Project, then Workspace,
+  and the sidebar tabs, filter sheet and card filter menu use that same order. Agent, Project
+  and Workspace menus also offer the empty-groups switch at their foot; Labels does not. When
+  the filter bar folds into the header, keep
   Collapse empty lanes, Archived, Filters and the sidebar switch in that order; the filter
   panel owns the remaining choices. If the header's measured action slot cannot fit, fold its
   view actions into View while keeping Filters separately reachable.
@@ -995,9 +1001,9 @@ apply to all three.
   | --- | --- | --- |
   | More actions | 200 maximum, fitted to content on web | Action labels and shortcuts; fitted rows retain `round(32 * max(1, scale))` after the label |
   | Agent | 240 | Provider mark, name, count and selection check |
+  | Label | 200 | Tag mark, name, count and check |
   | Project | 280 | Project name and folded path, count and check; `PROJECT_PATH_COLUMNS` uses this same base width |
   | Workspace | 260 | Project heading, workspace names, counts and checks |
-  | Label | 200 | Tag mark, name, count and check |
   | Lane width | 180 | Width mark, translated name and check |
   | Sort fields | 220 | Field icon, translated name, active direction and submenu chevron |
   | Sort directions | 190 | Direction icon, translated direction and check |
