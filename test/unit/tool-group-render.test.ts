@@ -18,7 +18,7 @@ vi.mock("@getpaseo/plugin/client", () => ({
   useRpc: () => () => Promise.resolve(null), usePaseo: () => ({}),
   useSettings: () => ({ status: "loading" }),
 }));
-vi.mock("@getpaseo/plugin/client/react-native", async () => {
+vi.mock("@getpaseo/plugin/client/ui", async () => {
   const rn = await import("./helpers/rn-mock");
   return { Icon: rn.View, ScrollView: rn.ScrollView, TextInput: rn.TextInput, copyText: async () => {}, useToast: () => ({ show() {}, error() {} }) };
 });
@@ -30,10 +30,11 @@ await import("./helpers/quiet-renderer");
 const { default: TestRenderer, act } = await import("react-test-renderer");
 const { StyleSheet } = await import("./helpers/rn-mock");
 const { ToolCallout, previewCopyActions } = await import("../../client/components/tool-callouts");
-const { ToolbarButton, TOOLBAR_TOOLTIP_MS } = await import("../../client/ui/toolbar-button");
+const { ToolbarButton, ToolbarMetricsContext, TOOLBAR_TOOLTIP_MS } = await import("../../client/ui/toolbar-button");
 const { HoverPreviewHeader } = await import("../../client/ui/hover-preview");
 const { updateEnhancerPreferences } = await import("../../client/preferences");
 const { classifyTool } = await import("../../client/tools/classify");
+const { SelectionTranslationContext, selectionScopeForElement } = await import("../../client/translation/selection");
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
 
@@ -48,6 +49,31 @@ const calls = ["first", "second"].map((callId, index) => classifyTool({
 }));
 
 describe("grouped tool card presentation", () => {
+  it.each([false, true])("binds the %s expanded tool surface to its own translation scope", (expanded) => {
+    vi.stubGlobal("__rnMockOS", "web");
+    const scope = { agentId: "tool-agent", kind: "tool_output" as const, streaming: false };
+    const elements: object[] = [];
+    let renderer!: ReturnType<typeof TestRenderer.create>;
+    try {
+      act(() => { renderer = TestRenderer.create(
+        React.createElement(SelectionTranslationContext.Provider, { value: scope },
+          React.createElement(ToolCallout, { data: calls[1]!, tokens, expanded, onExpandedChange: () => {} })),
+        { createNodeMock: (element) => {
+          const props = element.props as { dataSet?: { bctlkind?: string } };
+          if (props.dataSet?.bctlkind !== "tool_output") return null;
+          const node = {};
+          elements.push(node);
+          return node;
+        } },
+      ); });
+      expect(elements).toHaveLength(1);
+      expect(selectionScopeForElement(elements[0]!)).toBe(scope);
+      act(() => renderer.unmount());
+      expect(selectionScopeForElement(elements[0]!)).toBeNull();
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
   it("enables arrow paging only when maximized, keeps pages in range, and releases the binding", () => {
     paging.maximized = false;
     paging.bind.mockReset().mockReturnValue(paging.release);
@@ -144,6 +170,26 @@ describe("grouped tool card presentation", () => {
     act(() => { preview.unmount(); renderer.unmount(); });
   });
 
+  it.each([[24, 14], [28, 16], [36, 18]])("scales the icon feedback inside the unchanged %i target", (target, icon) => {
+    let renderer!: ReturnType<typeof TestRenderer.create>;
+    const onPress = vi.fn();
+    act(() => { renderer = TestRenderer.create(React.createElement(ToolbarMetricsContext.Provider, { value: { button: target, icon } },
+      React.createElement(ToolbarButton, { icon: "Copy", label: "Copy", onPress, tokens }))); });
+    const button = renderer.root.find((node) => (node.type as unknown) === "Pressable");
+    const fill = () => renderer.root.findByProps({ testID: "toolbar-icon-fill" });
+    const diameter = Math.round(icon * 1.7);
+    expect(StyleSheet.flatten(button.props.style)).toMatchObject({ width: target, height: target });
+    expect(renderer.root.findAllByProps({ testID: "toolbar-icon-fill" })).toHaveLength(0);
+    act(() => button.props.onHoverIn());
+    expect(StyleSheet.flatten(fill().props.style)).toMatchObject({ width: diameter, height: diameter, borderRadius: diameter / 2, backgroundColor: tokens.v2.surface2 });
+    expect(fill().findByProps({ name: "Copy" })).toBeDefined();
+    act(() => button.props.onPress());
+    expect(onPress).toHaveBeenCalledOnce();
+    act(() => button.props.onHoverOut());
+    expect(renderer.root.findAllByProps({ testID: "toolbar-icon-fill" })).toHaveLength(0);
+    act(() => renderer.unmount());
+  });
+
   it("names a toolbar button once a pointer rests on it", () => {
     vi.useFakeTimers();
     try {
@@ -153,6 +199,8 @@ describe("grouped tool card presentation", () => {
       })); });
       const button = renderer.root.find((node) => (node.type as unknown) === "Pressable");
       expect(texts(renderer.root)).not.toContain("Copy path");
+      const buttonStyle = StyleSheet.flatten(typeof button.props.style === "function" ? button.props.style({ pressed: false }) : button.props.style);
+      expect(buttonStyle).toMatchObject({ width: 24, height: 24, borderRadius: 12 });
       act(() => button.props.onHoverIn());
       act(() => { vi.advanceTimersByTime(TOOLBAR_TOOLTIP_MS); });
       expect(texts(renderer.root)).toContain("Copy path");
@@ -262,7 +310,7 @@ describe("grouped tool card presentation", () => {
       const button = renderer.root.find((node) => (node.type as unknown) === "Pressable");
       act(() => button.props.onHoverIn());
       act(() => { vi.advanceTimersByTime(TOOLBAR_TOOLTIP_MS); });
-      const slot = renderer.root.find((node) => (node.type as unknown) === "View" && node.props.pointerEvents === "none");
+      const slot = renderer.root.find((node) => (node.type as unknown) === "View" && node.props.pointerEvents === "none" && node.props.testID !== "toolbar-icon-fill");
       const style = StyleSheet.flatten(slot.props.style);
       expect(style.right).toBe(0);
       expect(style.left).toBeUndefined();

@@ -34,6 +34,12 @@ const V1 = {
 };
 
 describe("preferences v2 defaults", () => {
+  it("keeps interactive reply handoff off until explicitly enabled", () => {
+    expect(DEFAULT_PREFERENCES.liveUiReplies).toBe(false);
+    expect(parsePreferences({}).liveUiReplies).toBe(false);
+    expect(parsePreferences({ liveUiReplies: "true" }).liveUiReplies).toBe(false);
+    expect(storedPart(parsePreferences({ liveUiReplies: true })).liveUiReplies).toBe(true);
+  });
   it.each(["zinc", "midnight", "claude", "ghostty", "pureBlack"] as const)("preserves the %s accent", (accent) => {
     expect(parsePreferences({ accent }).accent).toBe(accent);
     expect(storedPart({ ...DEFAULT_PREFERENCES, accent }).accent).toBe(accent);

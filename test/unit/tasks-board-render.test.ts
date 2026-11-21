@@ -1,3 +1,5 @@
+import { resetUpdateIndicatorsForTests } from "../../client/tasks/board/update-indicator";
+import { resetAgentUpdatesForTests } from "../../client/agent-updates";
 import React from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import TestRenderer, { act, type ReactTestInstance } from "react-test-renderer";
@@ -10,43 +12,60 @@ vi.mock("react-native", async () => {
   const AppState = { currentState: "active", addEventListener: () => ({ remove() {} }) };
   return { ...rn, AppState, findNodeHandle: (node: { nativeTag?: number } | null) => node?.nativeTag ?? null, default: { ...rn.default, AppState } };
 });
-vi.mock("@getpaseo/plugin/client/react-native", async () => {
-  const rn = await import("./helpers/rn-mock");
-  const React = await import("react");
-  type Props = Record<string, unknown> & { children?: React.ReactNode };
-  // Renders every item, header and footer in place: enough to count what a lane shows.
-  function FlatList(props: Props) {
-    const data = (props.data as unknown[]) ?? [];
-    const render = props.renderItem as (info: { item: unknown; index: number }) => React.ReactNode;
-    const key = props.keyExtractor as (item: unknown, index: number) => string;
-    const empty = props.ListEmptyComponent as React.ReactNode;
-    return React.createElement(
-      "FlatList",
-      { ref: props.ref, testID: props.testID, refreshing: props.refreshing, onRefresh: props.onRefresh, refreshControl: props.refreshControl, alwaysBounceVertical: props.alwaysBounceVertical, onContentSizeChange: props.onContentSizeChange, onScroll: props.onScroll, contentContainerStyle: props.contentContainerStyle, onScrollToIndexFailed: props.onScrollToIndexFailed, onEndReached: props.onEndReached, data: props.data, viewabilityConfigCallbackPairs: props.viewabilityConfigCallbackPairs },
-      data.length
-        ? data.map((item, index) => {
-            host.rowRenders += 1;
-            const lane = (item as TaskCard).lane;
-            host.laneRowRenders[lane] = (host.laneRowRenders[lane] ?? 0) + 1;
-            return React.createElement(React.Fragment, { key: key(item, index) }, render({ item, index }));
-          })
-        : empty,
-      props.ListFooterComponent as React.ReactNode,
-    );
-  }
-  function Modal(props: Props) {
-    return props.open ? React.createElement("Modal", { title: props.title }, props.children) : null;
-  }
-  Modal.Content = (props: Props) => React.createElement("ModalContent", { contentContainerStyle: props.contentContainerStyle }, props.children);
-  return {
-    Icon: (props: Props) => React.createElement("Icon", { name: props.name, icon: props.icon, size: props.size, color: props.color }),
-    FlatList,
-    Modal,
-    ScrollView: rn.ScrollView,
-    TextInput: rn.TextInput,
-    useToast: () => ({ show: host.toast, error: host.toast }),
-    copyText: async () => {},
-  };
+// Board layout tests do not provide a DOM; the selection controller has its own DOM tests.
+vi.mock("../../client/components/selection-actions", async (importOriginal) => ({
+  ...await importOriginal<typeof import("../../client/components/selection-actions")>(),
+  useSelectionActions() {},
+}));
+vi.mock("@getpaseo/plugin/client/ui", async () => {
+  // The plugin imports all of these from `client/ui` now; where both mocks name a key, the UI one wins.
+  const fromReactNative = await (async () => {
+    const rn = await import("./helpers/rn-mock");
+    const React = await import("react");
+    type Props = Record<string, unknown> & { children?: React.ReactNode };
+    // Renders every item, header and footer in place: enough to count what a lane shows.
+    function FlatList(props: Props) {
+      const data = (props.data as unknown[]) ?? [];
+      const render = props.renderItem as (info: { item: unknown; index: number }) => React.ReactNode;
+      const key = props.keyExtractor as (item: unknown, index: number) => string;
+      const empty = props.ListEmptyComponent as React.ReactNode;
+      return React.createElement(
+        "FlatList",
+        { ref: props.ref, testID: props.testID, refreshing: props.refreshing, onRefresh: props.onRefresh, refreshControl: props.refreshControl, alwaysBounceVertical: props.alwaysBounceVertical, onContentSizeChange: props.onContentSizeChange, onScroll: props.onScroll, contentOffset: props.contentOffset, contentContainerStyle: props.contentContainerStyle, onScrollToIndexFailed: props.onScrollToIndexFailed, onEndReached: props.onEndReached, data: props.data, viewabilityConfigCallbackPairs: props.viewabilityConfigCallbackPairs },
+        data.length
+          ? data.map((item, index) => {
+              host.rowRenders += 1;
+              const lane = (item as TaskCard).lane;
+              host.laneRowRenders[lane] = (host.laneRowRenders[lane] ?? 0) + 1;
+              return React.createElement(React.Fragment, { key: key(item, index) }, render({ item, index }));
+            })
+          : empty,
+        props.ListFooterComponent as React.ReactNode,
+      );
+    }
+    function Modal(props: Props) {
+      return props.open ? React.createElement("Modal", { title: props.title }, props.children) : null;
+    }
+    Modal.Content = (props: Props) => React.createElement("ModalContent", { contentContainerStyle: props.contentContainerStyle }, props.children, props.footer as React.ReactNode);
+    Modal.supportsFooter = false;
+    return {
+      Icon: (props: Props) => React.createElement("Icon", { name: props.name, icon: props.icon, size: props.size, color: props.color }),
+      FlatList,
+      Modal,
+      ScrollView: rn.ScrollView,
+      TextInput: rn.TextInput,
+      useToast: () => ({ show: host.toast, error: host.toast }),
+      copyText: async () => {},
+    };
+  })();
+  const fromUi = await (async () => {
+    const React = await import("react");
+    return {
+      SidebarRow: (props: Record<string, unknown> & { trailing?: React.ReactNode }) =>
+        React.createElement("SidebarRow", { label: props.label, active: props.active, onPress: props.onPress }, props.trailing),
+    };
+  })();
+  return { ...fromReactNative, ...fromUi };
 });
 const host = vi.hoisted(() => ({
   toast: vi.fn(),
@@ -58,6 +77,7 @@ const host = vi.hoisted(() => ({
   countScope: null as unknown,
   canStop: false,
   updateState: { state: "idle" } as unknown,
+  agentUpdates: { state: "idle", entries: [], error: null } as unknown,
   save: vi.fn(async (_values: unknown, _revision: string) => true),
   reload: vi.fn(async () => {}),
   /** Rows a lane's list drew, counted by the FlatList mock. */
@@ -75,19 +95,13 @@ const paseo = vi.hoisted(() => ({
 }));
 vi.mock("@getpaseo/plugin/client", () => ({
   usePaseo: () => paseo,
-  useRpc: (contract: { name: string }) => (input: { agentIds?: string[] }) => Promise.resolve(contract.name === "tasks.availability" ? { entries: input.agentIds!.map((agentId) => ({ agentId, availability: { issue: null, blocked: {} } })) } : contract.name === "settings.update-check" ? host.updateState : { stop: host.canStop }),
+  useRpc: (contract: { name: string }) => (input: { agentIds?: string[] }) => Promise.resolve(contract.name === "tasks.availability" ? { entries: input.agentIds!.map((agentId) => ({ agentId, availability: { issue: null, blocked: {} } })) } : contract.name === "settings.agent-updates" ? host.agentUpdates : contract.name === "settings.update-check" ? host.updateState : { stop: host.canStop }),
   useSettings: (definition: { id: string }) => {
+    if (definition.id === "presentation" || definition.id === "timeline-translation") return { status: "loading" };
     const values = definition.id === "title-generation" ? host.titleSettings : host.settings;
     return values ? { status: "ready", values, revision: "1", saving: false, saveError: null, save: host.save, reload: host.reload } : { status: "loading" };
   },
 }));
-vi.mock("@getpaseo/plugin/client/ui", async () => {
-  const React = await import("react");
-  return {
-    SidebarRow: (props: Record<string, unknown> & { trailing?: React.ReactNode }) =>
-      React.createElement("SidebarRow", { label: props.label, active: props.active, onPress: props.onPress }, props.trailing),
-  };
-});
 // The data layer's real body needs a daemon; the board is tested against the samples.
 vi.mock("../../client/tasks/data", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../../client/tasks/data")>();
@@ -134,7 +148,7 @@ vi.mock("../../client/tasks/board/filter-options", async (importOriginal) => {
 
 import { AccessibilityInfo, Animated, StyleSheet, View } from "react-native";
 import { buildFilterOptions } from "../../client/tasks/board/filter-options";
-import { Modal } from "@getpaseo/plugin/client/react-native";
+import { Modal } from "@getpaseo/plugin/client/ui";
 import { ProviderLogo } from "../../client/components/provider-logo";
 import * as data from "../../client/tasks/data";
 import { firstPromptStoreFor } from "../../client/tasks/data/first-prompt";
@@ -143,7 +157,7 @@ import { CardCell, RollingCount, RollingTotal, SlashMark, WindowSegments } from 
 import { createLaneMotionStore, LaneMotionLayer, LaneMotionProvider } from "../../client/tasks/board/lane-motion";
 import { TasksSidebarEntry } from "../../client/tasks/board/sidebar-entry";
 import { contributeTasks } from "../../client/tasks/contribute";
-import { boardClearCount, consumeBoardOpen, encodeBoardParams, lastBoardParams, rememberBoardParams, rememberBoardRoute, rememberCollapsed, rememberedCollapsed, requestBoardClear, requestBoardOpen, resetBoardSessions, EMPTY_PARAMS, type BoardParams } from "../../client/tasks/board/params";
+import { boardClearCount, consumeBoardOpen, encodeBoardParams, lastBoardParams, rememberBoardParams, rememberBoardRoute, rememberCollapsed, rememberLane, rememberedCollapsed, requestBoardClear, requestBoardOpen, resetBoardSessions, EMPTY_PARAMS, type BoardParams } from "../../client/tasks/board/params";
 import { TabletToolbar } from "../../client/tasks/board/tablet-toolbar";
 import { DesktopFilterBar as DesktopFilterBarMemo, DesktopToolbar as DesktopToolbarMemo } from "../../client/tasks/board/filter-bar";
 import { LaneWidthMark } from "../../client/tasks/board/lane-width-mark";
@@ -154,10 +168,12 @@ import { readSidebarPreference, resetSidebarPreference, writeSidebarPreference }
 import { MOTION } from "../../client/tasks/board/board-style";
 import { ACTIVE_LANE_ORDER as LANE_ORDER, type TaskCard } from "../../client/tasks/model";
 import { BrandMark, DetailActionBar, PiMark, TagMark, TaskCardView, TaskDetailCards, taskTokens } from "../../client/tasks/cards";
+import { hoverFill } from "../../client/tasks/hover-fill";
 import { deviceTasksStore } from "../../client/tasks/device-preferences";
 import { DEFAULT_TASKS_SETTINGS as STOCK_SETTINGS } from "../../shared/tasks-settings";
 import { resetTasksEnabled, setTasksSettingsOpener } from "../../client/tasks/board/enabled";
 import { createFakePaseo, makeAgent } from "./helpers/fake-paseo";
+import { asExitPlan } from "./helpers/plan-request";
 import { TitleLoading } from "../../client/tasks/cards/title-loading";
 import { titleGenerationSettingsSchema, type TitleUpdateState } from "../../shared/title-generation";
 import { APP_SETTINGS_KEY, resetHostAppearanceForTests, setNativeSettingsReaderForTests, triggerHostAppearanceCheck } from "../../client/ui/tokens/host-appearance-shim";
@@ -421,12 +437,16 @@ function renderFocusBoard() {
 }
 
 beforeEach(() => {
+  (Modal as typeof Modal & { supportsFooter?: boolean }).supportsFooter = false;
+  resetUpdateIndicatorsForTests();
+  resetAgentUpdatesForTests();
   resetHostAppearanceForTests();
   host.settings = { ...DEFAULT_TASKS_SETTINGS };
   host.titleSettings = null;
   host.counts = null;
   host.canStop = false;
   host.updateState = { state: "idle" };
+  host.agentUpdates = { state: "idle", entries: [], error: null };
   host.rowRenders = 0;
   host.laneRowRenders = {};
   host.liveTasks = null;
@@ -462,7 +482,171 @@ describe("plan subscription", () => {
   });
 });
 
+// A real Claude ExitPlanMode request (`helpers/plan-request`), on every surface
+// the board answers a request from: its section, divider and controls as a
+// tool permission's, and Implement and Reject sending the plan's own actions.
+describe("a real ExitPlanMode request on the board", () => {
+  type Surface = "desktop card" | "desktop sidebar" | "tablet sheet" | "phone card" | "phone sheet";
+  const SURFACES: Surface[] = ["desktop card", "desktop sidebar", "tablet sheet", "phone card", "phone sheet"];
+
+  async function mount(surface: Surface, respond: (options: unknown) => Promise<void>) {
+    const handle = (data as unknown as { __handle: data.TasksHandle }).__handle;
+    const saved = { lanes: handle.lanes, byId: handle.byId };
+    const plan = asExitPlan(handle.byId.get("sample-input")!);
+    handle.lanes = { ...handle.lanes, needs_input: { ...handle.lanes.needs_input, cards: handle.lanes.needs_input.cards.map((card) => card.id === plan.id ? plan : card) } };
+    handle.byId = new Map(handle.byId).set(plan.id, plan);
+    const ref = vi.spyOn(paseo.agents, "ref").mockReturnValue({ respondToPermission: respond, timeline: { refetch: async () => ({ entries: [] }), subscribe: () => Object.assign(() => {}, { ready: Promise.resolve() }) } } as never);
+    const timings = holdTimings();
+    const restore = () => { timings.restore(); ref.mockRestore(); handle.lanes = saved.lanes; handle.byId = saved.byId; };
+    try {
+      const phone = surface.startsWith("phone");
+      (globalThis as { __rnMockOS?: string }).__rnMockOS = surface.startsWith("desktop") ? "web" : "ios";
+      await act(async () => { renderer = TestRenderer.create(screen(phone)); });
+      if (!phone) layOut(surface === "tablet sheet" ? 600 : 1600);
+      const card = () => cards().find((node) => node.props.card.id === plan.id)!;
+      if (surface === "desktop card" || surface === "phone card") {
+        const view = hostsById(`task-card-${plan.id}`)[0]!;
+        return { plan, restore, root: view, answers: view.find((node) => typeof node.type === "string" && node.props.testID === (phone ? "task-card-question-actions" : "task-card-answer-actions")) };
+      }
+      await act(async () => card().props.onSelect(card().props.card));
+      if (surface === "tablet sheet") {
+        mountFrames();
+        timings.finish(timings.slide().at(-1)!);
+      }
+      const section = hostsById("detail-question-section")[0]!;
+      return { plan, restore, root: section, answers: section.find((node) => typeof node.type === "string" && node.props.testID === "detail-permission-actions") };
+    } catch (error) {
+      restore();
+      throw error;
+    }
+  }
+  const labels = (node: ReactTestInstance) => node.findAll((child) => typeof child.type === "string" && child.props.accessibilityRole === "button").map((child) => child.props.accessibilityLabel);
+
+  it.each(SURFACES)("lays it out as a tool permission's section on the %s and implements it in place", async (surface) => {
+    const respond = vi.fn(async () => {});
+    const mounted = await mount(surface, respond);
+    try {
+      expect(labels(mounted.answers)).toEqual(["Reject", "Implement"]);
+      expect(textOf(mounted.root)).toContain("Plan");
+      expect(textOf(mounted.root)).not.toContain("ExitPlanMode");
+      if (surface.endsWith("card")) {
+        // The divider says the plan waits for review; the task's Open sits above it (no Stop: this host has no CLI).
+        expect(textOf(mounted.root.find((node) => typeof node.type === "string" && node.props.testID === "task-card-question-divider"))).toContain("Awaiting review");
+        const controls = mounted.root.find((node) => typeof node.type === "string" && node.props.testID === (surface === "phone card" ? "task-card-actions" : "task-card-control-row"));
+        const nodes = mounted.root.findAll((node) => typeof node.type === "string");
+        expect(nodes.indexOf(controls)).toBeLessThan(nodes.indexOf(mounted.answers));
+        expect(labels(controls)).toEqual(["Open"]);
+      } else {
+        // No bottom bar: the task's controls on the row above the section, the plan's answers inside it.
+        expect(hostsById("detail-action-bar")).toHaveLength(0);
+        expect(StyleSheet.flatten(mounted.root.props.style).borderTopWidth).toBe(0.5);
+        const controls = hostsById("detail-question-controls")[0]!;
+        // Only the tablet sheet adds Close: the sidebar's corner and the phone sheet's header close those.
+        expect(controls.findAll((node) => typeof node.type === "string" && node.props.accessibilityRole === "button").map((node) => node.props.testID)).toEqual(
+          surface === "tablet sheet" ? ["detail-bar-open", "detail-bar-close"] : ["detail-bar-open"],
+        );
+      }
+      const implement = mounted.answers.find((node) => (node.type as unknown) === "Pressable" && node.props.accessibilityLabel === "Implement");
+      await act(async () => { implement.props.onPress(); await Promise.resolve(); });
+      expect(respond).toHaveBeenCalledExactlyOnceWith({ requestId: mounted.plan.permission!.requestId, response: { behavior: "allow", selectedActionId: "implement" } });
+      expect(openAgent).not.toHaveBeenCalled();
+    } finally {
+      mounted.restore();
+    }
+  });
+
+  it.each(SURFACES)("rejects it from the %s and reports a failed answer", async (surface) => {
+    const respond = vi.fn(async () => { throw new Error("daemon offline"); });
+    const mounted = await mount(surface, respond);
+    try {
+      const reject = mounted.answers.find((node) => (node.type as unknown) === "Pressable" && node.props.accessibilityLabel === "Reject");
+      await act(async () => { reject.props.onPress(); await Promise.resolve(); await Promise.resolve(); });
+      expect(respond).toHaveBeenCalledExactlyOnceWith({ requestId: mounted.plan.permission!.requestId, response: { behavior: "deny", selectedActionId: "reject", message: "Denied by user" } });
+      // A phone says it in the board's own notice, not the host toast over its header.
+      if (surface.startsWith("phone")) expect(textOf(hostsById("phone-board-notice")[0]!)).toBe(BOARD_STRINGS.en.answerFailed("daemon offline"));
+      else expect(host.toast).toHaveBeenLastCalledWith(BOARD_STRINGS.en.answerFailed("daemon offline"));
+    } finally {
+      mounted.restore();
+    }
+  });
+});
+
 describe("card question dialog integration", () => {
+  it.each([
+    ["phone", "ios", true, 390],
+    ["small tablet", "android", false, 600],
+    ["tablet sidebar", "ios", false, 900],
+    ["desktop", "web", false, 1600],
+  ] as const)("answers a question from %s details", async (_surface, os, phone, width) => {
+    (globalThis as { __rnMockOS?: string }).__rnMockOS = os;
+    const handle = (data as unknown as { __handle: data.TasksHandle }).__handle;
+    const saved = { lanes: handle.lanes, byId: handle.byId };
+    const card: TaskCard = { ...handle.lanes.needs_input.cards[0]!, id: `detail-dialog-${os}-${width}`, permission: {
+      requestId: `detail-request-${os}-${width}`, kind: "question", name: "request_user_input_async", title: "Question", summary: "Confirm?", actions: [], remaining: 0,
+      questions: [{ header: "Question 1", question: "Confirm?", multiSelect: false, options: [{ label: "Keep" }, { label: "Reject" }], allowOther: true }],
+    } };
+    handle.lanes = { ...handle.lanes, needs_input: { ...handle.lanes.needs_input, cards: [card] } };
+    handle.byId = new Map(handle.byId).set(card.id, card);
+    const respond = vi.fn(async () => {});
+    const ref = vi.spyOn(paseo.agents, "ref").mockReturnValue({ respondToPermission: respond, timeline: { refetch: async () => ({ entries: [] }), subscribe: () => Object.assign(() => {}, { ready: Promise.resolve() }) } } as never);
+    try {
+      await act(async () => { renderer = TestRenderer.create(screen(phone)); });
+      layOut(width);
+      const view = cards().find((node) => node.props.card.id === card.id)!;
+      await act(async () => view.props.onSelect(card));
+      if (!phone && width < 760) {
+        await act(async () => { vi.advanceTimersByTime(350); });
+      }
+      const section = hostsById("detail-permission")[0]!;
+      const buttons = section.findAll((node) => typeof node.type === "string" && node.props.accessibilityRole === "button");
+      expect(buttons.map((button) => button.props.accessibilityLabel)).toEqual(os === "web" ? ["Keep", "Reject", "View questions"] : ["View questions"]);
+      expect(hostsById("detail-pending-questions").length).toBe(os === "web" ? 1 : 0);
+      await act(async () => buttons.at(-1)!.props.onPress());
+      const dialog = () => hostsById("task-question-dialog").at(-1)!;
+      expect(hostsById("task-question-dialog")).toHaveLength(os === "web" ? 2 : 1);
+      await act(async () => dialog().findByProps({ testID: "task-question-option-0-1" }).props.onPress());
+      await act(async () => dialog().findByProps({ testID: "task-question-close" }).props.onPress());
+      await act(async () => buttons.at(-1)!.props.onPress());
+      expect(dialog().findByProps({ testID: "task-question-submit" }).props.disabled).toBe(false);
+      await act(async () => dialog().findByProps({ testID: "task-question-submit" }).props.onPress());
+      expect(respond).toHaveBeenCalledExactlyOnceWith({ requestId: card.permission!.requestId, response: { behavior: "allow", updatedInput: { answers: { "Question 1": "Reject" } } } });
+      expect(openAgent).not.toHaveBeenCalled();
+    } finally {
+      act(() => questionDialogStore(paseo as never).close());
+      ref.mockRestore();
+      handle.lanes = saved.lanes;
+      handle.byId = saved.byId;
+    }
+  });
+
+  it("opens one dialog when multiple board instances share a client", async () => {
+    const handle = (data as unknown as { __handle: data.TasksHandle }).__handle;
+    const saved = { lanes: handle.lanes, byId: handle.byId };
+    const card: TaskCard = { ...handle.lanes.needs_input.cards[0]!, id: "multi-board-dialog", permission: {
+      requestId: "multi-board-request", kind: "question", name: "request_user_input_async", title: "Question", summary: "Confirm?", actions: [], remaining: 0,
+      questions: [{ header: "Question 1", question: "Confirm?", multiSelect: false, options: [{ label: "Keep" }, { label: "Reject" }], allowOther: true }],
+    } };
+    handle.lanes = { ...handle.lanes, needs_input: { ...handle.lanes.needs_input, cards: [card] } };
+    handle.byId = new Map(handle.byId).set(card.id, card);
+    try {
+      await act(async () => { renderer = TestRenderer.create(React.createElement(React.Fragment, null, screen(false), screen(false), screen(false))); });
+      layOut(1600);
+      const views = renderer!.root.findAllByType(TaskCardView).filter((node) => node.props.card.id === card.id);
+      expect(views).toHaveLength(3);
+      const button = views[0]!.props.permissionButtons.find((entry: { kind: string }) => entry.kind === "question");
+      await act(async () => views[0]!.props.onPermission(card, button));
+      expect(hostsById("task-question-dialog")).toHaveLength(1);
+      await act(async () => hostsById("task-question-option-0-1")[0]!.props.onPress());
+      await act(async () => hostsById("task-question-close")[0]!.props.onPress());
+      await act(async () => views[1]!.props.onPermission(card, button));
+      expect(hostsById("task-question-dialog")).toHaveLength(1);
+      expect(hostsById("task-question-submit")[0]!.props.disabled).toBe(false);
+    } finally {
+      handle.lanes = saved.lanes;
+      handle.byId = saved.byId;
+    }
+  });
+
   it.each([false, true].flatMap((phone) => [false, true].map((stale) => [phone, stale] as const)))("opens from the board card without navigation and rejects stale submissions (phone=%s, stale=%s)", async (phone, stale) => {
     const handle = (data as unknown as { __handle: data.TasksHandle }).__handle;
     const saved = { lanes: handle.lanes, byId: handle.byId };
@@ -914,7 +1098,7 @@ describe("Tasks search coverage and centred toolbar", () => {
     }
   });
 
-  it("shows desktop toolbar outlines only on hover and enlarges their icons", () => {
+  it("shows the shared desktop toolbar hover fill and keeps icon sizes", () => {
     (globalThis as { __rnMockOS?: string }).__rnMockOS = "web";
     act(() => { renderer = TestRenderer.create(screen(false)); });
     layOut(2400);
@@ -926,11 +1110,11 @@ describe("Tasks search coverage and centred toolbar", () => {
           : button();
         return StyleSheet.flatten(node.props.style);
       };
-      expect(outline(), id).toMatchObject({ borderColor: "transparent", borderRadius: 7, width: 30, height: 30 });
+      expect(outline(), id).toMatchObject({ borderColor: "transparent", borderRadius: 15, width: 30, height: 30 });
       act(() => button().props.onHoverIn());
-      expect(outline(), id).toMatchObject({ borderColor: id === "empty-lanes-toggle" ? "#e2e2e6" : taskTokens(theme).borderStrong, borderRadius: 7, width: 30, height: 30 });
+      expect(outline(), id).toMatchObject({ borderColor: "transparent", borderRadius: 15, width: 30, height: 30, backgroundColor: id === "empty-lanes-toggle" ? "transparent" : hoverFill(taskTokens(theme).surface0, taskTokens(theme).foreground, true, false) });
       act(() => button().props.onHoverOut());
-      expect(outline(), id).toMatchObject({ borderColor: "transparent", borderRadius: 7 });
+      expect(outline(), id).toMatchObject({ borderColor: "transparent", borderRadius: 15 });
       if (id !== "sidebar-switch") expect(button().find((node) => (node.type as unknown) === "Icon").props.size, id).toBe(17);
     }
     expect(StyleSheet.flatten(hostsById("panel-mark")[0]!.props.style)).toMatchObject({ width: 16, height: 13 });
@@ -943,11 +1127,11 @@ describe("Tasks search coverage and centred toolbar", () => {
     expect(field.findAll((node) => node.props.testID === "search-full-conversation-toggle")).toHaveLength(0);
     const toggle = hostsById("search-full-conversation-toggle")[0]!;
     // The fixture uses a 15/14 font scale, so the 28-point button rounds to 30.
-    expect(StyleSheet.flatten(toggle.props.style)).toMatchObject({ width: 30, height: 30, borderRadius: 7 });
+    expect(StyleSheet.flatten(toggle.props.style)).toMatchObject({ width: 30, height: 30, borderRadius: 15 });
     expect(toggle.props.dataSet?.bctip).toBe(BOARD_STRINGS.en.fullConversationHint(false));
     expect(toggle.props.accessibilityState.selected).toBe(false);
     act(() => toggle.props.onHoverIn());
-    expect(StyleSheet.flatten(hostsById("search-full-conversation-toggle")[0]!.props.style).boxShadow).toBe(taskTokens(theme).card.buttonShadowHover);
+    expect(StyleSheet.flatten(hostsById("search-full-conversation-toggle")[0]!.props.style).backgroundColor).toBe(hoverFill(taskTokens(theme).surface0, taskTokens(theme).foreground, true, false));
     act(() => toggle.props.onHoverOut());
     expect(StyleSheet.flatten(hostsById("search-full-conversation-toggle")[0]!.props.style).boxShadow).toBeUndefined();
     act(() => toggle.props.onPress());
@@ -1137,12 +1321,62 @@ describe("Tasks search coverage and centred toolbar", () => {
     }
   });
 
+  it("aggregates agent-only updates into corner and inline desktop indicators", async () => {
+    setTasksSettingsOpener(vi.fn());
+    host.agentUpdates = { state: "done", entries: [{ provider: "codex", status: "available", updateAvailable: true }], error: null };
+    (globalThis as { __rnMockOS?: string }).__rnMockOS = "web";
+    await act(async () => { renderer = TestRenderer.create(screen(false)); });
+    layOut(1600);
+    const dot = hostsById("desktop-more-update-dot")[0]!;
+    expect(dot.props.style).toMatchObject({ width: 4, height: 4, bottom: 2, right: 2, backgroundColor: "#da4738" });
+    act(() => hostsById("desktop-toolbar-more")[0]!.props.onPress());
+    const settingsDot = hostsById("desktop-settings-update-dot")[0]!;
+    expect(settingsDot.props.style).toMatchObject({ width: 4, height: 4, alignSelf: "center" });
+    const settingsItem = menuOption(BOARD_STRINGS.en.openSettings);
+    const settingsLabel = settingsItem.find((node) => typeof node.type === "string" && node.props.children === BOARD_STRINGS.en.openSettings);
+    const layout = measureHostTree(settingsItem, { width: 200 });
+    const labelFrame = layout.get(settingsLabel)!; const dotFrame = layout.get(settingsDot)!;
+    expect(Math.abs(dotFrame.left - (labelFrame.left + labelFrame.width) - 4)).toBeLessThanOrEqual(0.5);
+    expect(Math.abs(dotFrame.top + dotFrame.height / 2 - (labelFrame.top + labelFrame.height / 2))).toBeLessThanOrEqual(0.5);
+    host.agentUpdates = { state: "done", entries: [{ provider: "codex", status: "current", updateAvailable: false }], error: null };
+    await act(async () => { await vi.advanceTimersByTimeAsync(30_000); });
+    expect(hostsById("desktop-more-update-dot")).toHaveLength(0);
+  });
+
   it("does not show desktop update indicators on mobile", async () => {
     host.updateState = { state: "done", versions: { status: "available", current: "1.0.0", latest: "1.1.0", currentBuild: 202610311637, latestBuild: 202610311700 } };
     (globalThis as { __rnMockOS?: string }).__rnMockOS = "ios";
     await act(async () => { renderer = TestRenderer.create(screen(true)); });
     expect(hostsById("desktop-more-update-dot")).toHaveLength(0);
     expect(hostsById("desktop-settings-update-dot")).toHaveLength(0);
+  });
+
+  it.each(["ios", "android"].flatMap((os) => [14, 21].map((base) => ({ os, base }))))("shows tablet update indicators and opens settings on $os at UI $base", async ({ os, base }) => {
+    const openSettings = vi.fn();
+    setTasksSettingsOpener(openSettings);
+    host.agentUpdates = { state: "done", entries: [{ provider: "codex", status: "available", updateAvailable: true }], error: null };
+    (globalThis as { __rnMockOS?: string }).__rnMockOS = os;
+    await act(async () => { renderer = TestRenderer.create(screen(false, { agent: "codex" }, { ...(theme as object), typography: { fontSize: { ui: base } } })); });
+    layOut(1600);
+    act(() => hostsById("tablet-toolbar-end")[0]!.props.onLayout({ nativeEvent: { layout: { x: 0, y: 0, width: 20, height: 40 } } }));
+    expect(hostsById("tablet-view-update-dot")).toHaveLength(1);
+    const anchor = hostsById("tablet-view-container")[0]!;
+    const dot = hostsById("tablet-view-update-dot")[0]!;
+    const frames = measureHostTree(anchor, { width: base === 14 ? 32 : 48 });
+    const buttonFrame = frames.get(hostsById("tablet-view")[0]!)!;
+    const dotFrame = frames.get(dot)!;
+    expect(dotFrame.left - (buttonFrame.left + buttonFrame.width / 2)).toBe(7);
+    expect(dotFrame.top - (buttonFrame.top + buttonFrame.height / 2)).toBe(8);
+    const badge = hostParentOf(hostsById("tablet-filter-count")[0]!)!;
+    const badgeFrame = frames.get(badge)!;
+    expect(badgeFrame.top + badgeFrame.height).toBeLessThanOrEqual(dotFrame.top);
+    act(() => hostsById("tablet-view")[0]!.props.onPress());
+    expect(hostsById("tablet-settings-update-dot")).toHaveLength(1);
+    act(() => menuOption(BOARD_STRINGS.en.openSettings).props.onPress());
+    expect(openSettings).toHaveBeenCalledOnce();
+    host.agentUpdates = { state: "done", entries: [{ provider: "codex", status: "current", updateAvailable: false }], error: null };
+    await act(async () => { await vi.advanceTimersByTimeAsync(30_000); });
+    expect(hostsById("tablet-view-update-dot")).toHaveLength(0);
   });
 
   it.each(["web", "ios"] as const)("%s keeps every action available when a narrow side slot needs the View menu", (os) => {
@@ -1896,6 +2130,33 @@ describe("Tasks board, desktop", () => {
     }
   });
 
+  it("draws again only the cells whose own card or state changed when the board updates", () => {
+    act(() => {
+      renderer = TestRenderer.create(screen(false));
+    });
+    layOut(2400);
+    const handle = (data as unknown as { __handle: { lanes: Record<string, { cards: TaskCard[] }> } }).__handle;
+    const original = handle.lanes;
+    // A cell's own hooks run once per drawn cell: count them.
+    const cells = vi.spyOn(todoSummary, "useTodoSummary");
+    try {
+      // A page lands in one lane: the list draws its rows, but the cards already shown stay as they were.
+      const running = original.running!;
+      handle.lanes = { ...original, running: { ...running, cards: running.cards.slice(1) } };
+      act(() => renderer!.update(screen(false)));
+      expect(running.cards.length).toBeGreaterThan(1);
+      expect(cells).not.toHaveBeenCalled();
+      // One card renamed: only its cell draws.
+      const [first, ...rest] = handle.lanes.running!.cards;
+      handle.lanes = { ...handle.lanes, running: { ...handle.lanes.running!, cards: [{ ...first!, title: "Renamed" }, ...rest] } };
+      act(() => renderer!.update(screen(false)));
+      expect(cells.mock.calls.map((call) => call[1])).toEqual([first!.id]);
+    } finally {
+      cells.mockRestore();
+      handle.lanes = original;
+    }
+  });
+
   it("keeps the cards' fields across a settings read-back that leaves them as they were", () => {
     act(() => {
       renderer = TestRenderer.create(screen(false));
@@ -2398,6 +2659,7 @@ describe("Tasks board, desktop", () => {
     const sidebar = () => hostsById("details-sidebar")[0]!;
     const layoutSidebar = (height: number) => sidebar().props.onLayout({ nativeEvent: { layout: { width: 380, height } } });
     act(() => layoutSidebar(800));
+    expect(sidebar().props.dataSet).toMatchObject({ bcnocomposer: "" });
     const content = sidebar().props.children;
     for (let delta = 1; delta <= 50; delta++) {
       act(() => hostsById("tasks-board-area")[0]!.props.onLayout({ nativeEvent: { layout: { width: 1300 + delta, height: 800 - delta } } }));
@@ -2407,6 +2669,7 @@ describe("Tasks board, desktop", () => {
     // Window resizing still changes lane widths and switches the short-column layout.
     expect(StyleSheet.flatten(hostsById("lane-surface-running")[0]!.props.style).width).toBe((1350 - 48) / 4);
     act(() => layoutSidebar(639));
+    expect(sidebar().props.dataSet).toMatchObject({ bcnocomposer: "" });
     expect(hostsById(selected ? "detail-tab-short-scroll" : "details-sidebar-scroll")).toHaveLength(1);
     act(() => layoutSidebar(640));
     expect(hostsById("details-sidebar-scroll")).toHaveLength(0);
@@ -3185,6 +3448,32 @@ describe("Tasks board, desktop", () => {
     }
   });
 
+  it.each(["web", "ios", "android"])("on %s answers a tool permission in the sheet's request section, its controls and Close above it", (os) => {
+    (globalThis as { __rnMockOS?: string }).__rnMockOS = os;
+    const timings = holdTimings();
+    try {
+      act(() => { renderer = TestRenderer.create(screen(false)); });
+      layOut(600);
+      const card = cards().find((node) => node.props.card.id === "sample-input")!;
+      act(() => card.props.onSelect(card.props.card));
+      mountFrames();
+      timings.finish(timings.slide().at(-1)!);
+      // As a question's: no bottom bar; Open and Close on the row above the request, Allow and Deny under it.
+      expect(hostsById("detail-action-bar")).toHaveLength(0);
+      const controls = hostsById("detail-question-controls");
+      expect(controls).toHaveLength(1);
+      expect(controls[0]!.findAll((node) => typeof node.type === "string" && node.props.accessibilityRole === "button").map((node) => node.props.testID)).toEqual(["detail-bar-open", "detail-bar-close"]);
+      const section = hostsById("detail-question-section");
+      expect(section).toHaveLength(1);
+      expect(StyleSheet.flatten(section[0]!.props.style).borderTopWidth).toBe(0.5);
+      const answers = section[0]!.findAll((node) => typeof node.type === "string" && node.props.testID === "detail-permission-actions");
+      expect(answers[0]!.findAll((node) => typeof node.type === "string" && node.props.accessibilityRole === "button").map((node) => node.props.accessibilityLabel)).toEqual(["Allow", "Deny"]);
+      expect(openAgent).not.toHaveBeenCalled();
+    } finally {
+      timings.restore();
+    }
+  });
+
   it.each(["web", "ios", "android"])("on %s keeps the sheet's action bar at the bottom of what shows, with one scroller giving up the room below", (os) => {
     (globalThis as { __rnMockOS?: string }).__rnMockOS = os;
     const timings = holdTimings();
@@ -3771,6 +4060,11 @@ describe("Tasks board, desktop", () => {
     expect(renderer!.root.findByType(TaskDetailCards).props.card.id).toBe("sample-child-1");
     expect(host.toast).not.toHaveBeenCalled();
     expect(openAgent).not.toHaveBeenCalled();
+    // The parent whose row it was is one press back, as after a jump from the parent's details.
+    expect(hostsById("detail-back")[0]!.props.accessibilityLabel).toContain(parent.props.card.title);
+    act(() => hostsById("detail-back")[0]!.props.onPress());
+    expect(renderer!.root.findByType(TaskDetailCards).props.card.id).toBe("sample-running");
+    expect(hostsById("detail-back")).toHaveLength(0);
   });
 
   it("hands the cards Unarchive when the host has the CLI", async () => {
@@ -5308,23 +5602,23 @@ describe("mobile toolbar press feedback", () => {
     const event = { nativeEvent: { pageX: 100, pageY: 100, identifier: 0 } };
     for (const id of ids) {
       const button = () => hostsById(id)[0]!;
-      const shadow = () => phone && id !== "phone-sort-hint"
-        ? StyleSheet.flatten(button().find((node) => (node.type as unknown) === "View").props.style).boxShadow
-        : StyleSheet.flatten(button().props.style).boxShadow;
-      expect(shadow(), id).toBeFalsy();
+      const fill = () => phone && id !== "phone-sort-hint"
+        ? StyleSheet.flatten(button().find((node) => (node.type as unknown) === "View").props.style).backgroundColor
+        : StyleSheet.flatten(button().props.style).backgroundColor;
+      const rest = fill();
       await act(async () => { button().props.onPressIn(event); button().props.onTouchStart(event); });
       await act(async () => { await vi.advanceTimersByTimeAsync(100); });
-      expect(StyleSheet.flatten(button().props.style).transform, id).toEqual([{ scale: 1.03 }]);
-      expect(shadow(), id).toBeTruthy();
+      expect(StyleSheet.flatten(button().props.style).transform, id).toBeUndefined();
+      expect(fill(), id).toBe(hoverFill(taskTokens(theme).surface0, taskTokens(theme).foreground, false, true));
       await act(async () => { button().props.onPressOut(event); button().props.onTouchEnd(event); });
-      expect(shadow(), id).toBeFalsy();
+      expect(fill(), id).toBe(rest);
     }
     const toggle = () => hostsById(phone ? "phone-subtasks" : "subtasks-toggle")[0]!;
     const before = toggle().props.accessibilityState.selected;
     await act(async () => { toggle().props.onPressIn(event); toggle().props.onTouchStart(event); toggle().props.onTouchMove({ nativeEvent: { ...event.nativeEvent, pageY: 108 } }); toggle().props.onPressOut(event); toggle().props.onTouchEnd(event); toggle().props.onPress(event); });
     expect(toggle().props.accessibilityState.selected).toBe(before);
     await act(async () => { toggle().props.onPressIn(event); toggle().props.onTouchStart(event); toggle().props.onPressOut(event); toggle().props.onTouchEnd(event); });
-    expect(StyleSheet.flatten(toggle().props.style).transform).toEqual([{ scale: 1.03 }]);
+    expect(StyleSheet.flatten(toggle().props.style).transform).toBeUndefined();
     await act(async () => toggle().props.onPress(event));
     expect(toggle().props.accessibilityState.selected).toBe(!before);
     await act(async () => { await vi.advanceTimersByTimeAsync(100); });
@@ -5336,8 +5630,8 @@ describe("mobile toolbar press feedback", () => {
       for (const id of ["phone-search-clear", "search-full-conversation-toggle"]) {
         const button = () => hostsById(id)[0]!;
         await act(async () => { button().props.onPressIn(event); button().props.onTouchStart(event); await vi.advanceTimersByTimeAsync(100); });
-        expect(StyleSheet.flatten(button().props.style).transform, id).toEqual([{ scale: 1.03 }]);
-        expect(StyleSheet.flatten(button().props.style).boxShadow, id).toBeTruthy();
+        expect(StyleSheet.flatten(button().props.style).transform, id).toBeUndefined();
+        expect(StyleSheet.flatten(button().props.style).backgroundColor, id).toBe(hoverFill(taskTokens(theme).surface0, taskTokens(theme).foreground, false, true));
         await act(async () => { button().props.onPressOut(event); button().props.onTouchEnd(event); });
       }
     }
@@ -5488,7 +5782,7 @@ describe("F2: tablet overlays outside toolbar AX bounds", () => {
     expect(hostsById("tablet-search-toggle")).toHaveLength(0);
     expect(hostsById("tablet-toolbar-search")).toHaveLength(1);
     expect(hostParentOf(hostsById("tablet-toolbar-search-group")[0]!)?.props.testID).toBe("tablet-toolbar-start");
-    expect(StyleSheet.flatten(hostsById("search-full-conversation-toggle")[0]!.props.style)).toMatchObject({ borderWidth: 0, borderRadius: 7 });
+    expect(StyleSheet.flatten(hostsById("search-full-conversation-toggle")[0]!.props.style)).toMatchObject({ borderWidth: 0, borderRadius: 16 });
     const fullSearchIcon = hostsById("search-full-conversation-toggle")[0]!.findAll((node) => node.props.icon?.svg)[0]!;
     expect(fullSearchIcon.props.size).toBe(18);
   });
@@ -5721,8 +6015,8 @@ describe("Tasks board, tablet filters", () => {
     for (const button of buttons) {
       const style = StyleSheet.flatten(button.props.style);
       expect(style.height).toBe(Math.round(32 * Math.max(1, base / 14)));
-      expect(style.minWidth).toBe(Math.round(32 * Math.max(1, base / 14)));
-      expect(style.borderRadius).toBe(7);
+      expect(style.width).toBe(Math.round(32 * Math.max(1, base / 14)));
+      expect(style.borderRadius).toBe(style.height / 2);
       const icon = button.find((node) => button.props.testID === "sidebar-switch" ? typeof node.type === "string" && node.props.testID === "panel-mark" : (node.type as unknown) === "Icon");
       expect(StyleSheet.flatten(hostParentOf(icon)!.props.style)).toMatchObject({ width: 18, height: 18 });
     }
@@ -6417,6 +6711,44 @@ describe("Tasks board, the 1 s clock", () => {
 });
 
 describe("Tasks board, phone", () => {
+  it.each(["ios", "android"].flatMap((os) => ["en", "zh"].flatMap((language) => [14, 21].map((base) => ({ os, language, base })))))
+  ("$os $language UI $base keeps the phone update dot at the bottom right without replacing the filter badge", async ({ os, language, base }) => {
+    (globalThis as { __rnMockOS?: string }).__rnMockOS = os;
+    updateEnhancerPreferences({ language: language as "en" | "zh" });
+    const openSettings = vi.fn(); setTasksSettingsOpener(openSettings);
+    host.agentUpdates = { state: "done", entries: [{ provider: "codex", status: "available", updateAvailable: true }], error: null };
+    await act(async () => { renderer = TestRenderer.create(screen(true, { agent: "codex" }, { ...(theme as object), typography: { fontSize: { ui: base } } })); });
+    const anchor = hostsById("phone-more-container")[0]!;
+    const more = hostsById("phone-more")[0]!;
+    // The existing active-filter count remains visible alongside the separate update indicator.
+    expect(textOf(more)).toContain("1");
+    const badgeText = more.find((node) => (node.type as unknown) === "Text" && node.props.children === 1);
+    const badge = hostParentOf(badgeText)!;
+    const dot = hostsById("phone-more-update-dot")[0]!;
+    const frames = measureHostTree(anchor, { width: 44 });
+    const point = frames.get(dot)!; const count = frames.get(badge)!;
+    expect(point.width).toBe(4); expect(point.height).toBe(4);
+    expect(point.top + point.height).toBe(34);
+    expect(point.left + point.width).toBe(frames.get(anchor)!.left + 33);
+    expect(dot.props.style.backgroundColor).toBe("#da4738");
+    expect(point.left + point.width <= count.left || point.top >= count.top + count.height).toBe(true);
+    act(() => more.props.onPress());
+    const settings = hostsById("filter-sheet-settings")[0]!;
+    const settingsDot = hostsById("filter-sheet-settings-update-dot")[0]!;
+    const footer = hostsById("filter-sheet-footer")[0]!;
+    for (const width of [320, 390]) {
+      const layout = measureHostTree(footer, { width });
+      const button = layout.get(settings)!; const indicator = layout.get(settingsDot)!;
+      const label = layout.get(hostsById("filter-sheet-settings-label")[0]!)!;
+      expect(indicator.width).toBe(4); expect(indicator.height).toBe(4);
+      expect(Math.abs(indicator.top + 2 - (label.top + label.height / 2))).toBeLessThanOrEqual(0.5);
+      expect(Math.abs(indicator.left - (label.left + label.width) - 4)).toBeLessThanOrEqual(0.5);
+      expect(indicator.left + 4).toBeLessThanOrEqual(button.left + button.width);
+      expect(button.left + button.width).toBeLessThanOrEqual(width);
+    }
+    act(() => settings.props.onPress()); expect(openSettings).toHaveBeenCalledOnce();
+  });
+
   it("puts settings to the right of reset and opens it", () => {
     const openSettings = vi.fn();
     setTasksSettingsOpener(openSettings);
@@ -6673,6 +7005,90 @@ describe("Tasks board, phone", () => {
     expect(pressable("Running 2").props.accessibilityState).toEqual({ selected: true });
   });
 
+  it.each(["ios", "android"])("restores the phone tabs and each lane after a screen remount on %s", (os) => {
+    (globalThis as { __rnMockOS?: string }).__rnMockOS = os;
+    const scrollTo = vi.fn();
+    const scrollToOffset = vi.fn();
+    const create = () => TestRenderer.create(screen(true), { createNodeMock: (element) => element.type === "ScrollView" ? { scrollTo } : element.type === "FlatList" ? { scrollToOffset } : null });
+    const list = (id: string) => hostsById(`phone-lane-${id}`)[0]!.find((node) => (node.type as unknown) === "FlatList");
+    const tabs = () => hostParentOf(hostsById("phone-stat-running")[0]!)!;
+    const scroll = (id: string, y: number) => list(id).props.onScroll({ nativeEvent: { contentOffset: { x: 0, y }, contentSize: { height: 1800 }, layoutMeasurement: { height: 500 } } });
+    act(() => { renderer = create(); });
+    act(() => { scroll("needs_input", 240); scroll("running", 420); tabs().props.onScroll({ nativeEvent: { contentOffset: { x: 75, y: 0 } } }); });
+    act(() => pressable("Running 2").props.onPress());
+    act(() => renderer!.unmount());
+    scrollTo.mockClear();
+    scrollToOffset.mockClear();
+    act(() => { renderer = create(); });
+    if (os === "ios") {
+      // iOS reports no event for a mount's contentOffset: each list scrolls there once it is mounted, without animating.
+      expect(list("needs_input").props.contentOffset).toBeUndefined();
+      expect(list("running").props.contentOffset).toBeUndefined();
+      expect(scrollToOffset.mock.calls).toEqual([[{ offset: 240, animated: false }], [{ offset: 420, animated: false }]]);
+      // Its scroll event ends the restore; later renders do not scroll again.
+      act(() => { scroll("needs_input", 240); scroll("running", 420); });
+      act(() => renderer!.update(screen(true)));
+      expect(scrollToOffset).toHaveBeenCalledTimes(2);
+    } else {
+      expect(list("needs_input").props.contentOffset).toEqual({ x: 0, y: 240 });
+      expect(list("running").props.contentOffset).toEqual({ x: 0, y: 420 });
+      expect(scrollToOffset).not.toHaveBeenCalled();
+    }
+    expect(tabs().props.contentOffset).toEqual({ x: 75, y: 0 });
+    const running = () => hostsById("phone-stat-running")[0]!;
+    const row = () => running().find((node) => node !== running() && typeof node.type === "string" && typeof node.props.onLayout === "function");
+    act(() => {
+      hostParentOf(tabs())!.props.onLayout({ nativeEvent: { layout: { width: 200 } } });
+      running().props.onLayout({ nativeEvent: { layout: { x: 80, width: 100 } } });
+      row().props.onLayout({ nativeEvent: { layout: { x: 0, width: 100 } } });
+    });
+    act(() => running().props.onLayout({ nativeEvent: { layout: { x: 90, width: 100 } } }));
+    expect(scrollTo).not.toHaveBeenCalledWith(expect.objectContaining({ animated: true }));
+  });
+
+  it("measures a lane restored at its end from the restored offset on ios", () => {
+    (globalThis as { __rnMockOS?: string }).__rnMockOS = "ios";
+    const list = () => hostsById("phone-lane-running")[0]!.find((node) => (node.type as unknown) === "FlatList");
+    const bottom = () => hostsById("phone-lane-running")[0]!.findAll((node) => typeof node.type === "string" && node.props.testID === "phone-scroll-bottom");
+    const scrollToOffset = vi.fn();
+    const create = () => TestRenderer.create(screen(true), { createNodeMock: (element) => element.type === "FlatList" ? { scrollToOffset } : null });
+    act(() => { renderer = create(); });
+    act(() => pressable("Running 2").props.onPress());
+    act(() => list().props.onScroll({ nativeEvent: { contentOffset: { x: 0, y: 900 }, contentSize: { height: 1400 }, layoutMeasurement: { height: 500 } } }));
+    act(() => renderer!.unmount());
+    act(() => { renderer = create(); });
+    expect(scrollToOffset).toHaveBeenCalledExactlyOnceWith({ offset: 900, animated: false });
+    // Measured before the restore's scroll event comes: from the restored offset, not 0.
+    act(() => hostParentOf(list())!.props.onLayout({ nativeEvent: { layout: { height: 500 } } }));
+    act(() => list().props.onContentSizeChange(390, 1400));
+    expect(bottom()).toHaveLength(0);
+  });
+
+  it("leaves a lane emptied while away at its top on ios", () => {
+    (globalThis as { __rnMockOS?: string }).__rnMockOS = "ios";
+    const list = () => hostsById("phone-lane-running")[0]!.find((node) => (node.type as unknown) === "FlatList");
+    const scrollToOffset = vi.fn();
+    const create = () => TestRenderer.create(screen(true), { createNodeMock: (element) => element.type === "FlatList" ? { scrollToOffset } : null });
+    act(() => { renderer = create(); });
+    act(() => pressable("Running 2").props.onPress());
+    act(() => list().props.onScroll({ nativeEvent: { contentOffset: { x: 0, y: 600 }, contentSize: { height: 1400 }, layoutMeasurement: { height: 500 } } }));
+    act(() => renderer!.unmount());
+    const handle = (data as unknown as { __handle: { lanes: Record<string, { cards: TaskCard[] }> } }).__handle;
+    const saved = handle.lanes;
+    try {
+      handle.lanes = { ...saved, running: { ...saved.running!, cards: [] } };
+      act(() => { renderer = create(); });
+      expect(scrollToOffset).not.toHaveBeenCalled();
+      handle.lanes = saved;
+      act(() => renderer!.update(screen(true)));
+      act(() => renderer!.unmount());
+      act(() => { renderer = create(); });
+      expect(scrollToOffset).not.toHaveBeenCalled();
+    } finally {
+      handle.lanes = saved;
+    }
+  });
+
   it.each(["ios", "android", "web"])("%s scrolls only when the selected tab is pressed again", (os) => {
     (globalThis as { __rnMockOS?: string }).__rnMockOS = os;
     const scrollToOffset = vi.fn();
@@ -6706,6 +7122,78 @@ describe("Tasks board, phone", () => {
     expect(pressable("Review 2").props.accessibilityState).toEqual({ selected: true });
     act(() => pager().props.onScrollEndDrag({ nativeEvent: { contentOffset: { x: 390, y: 0 } } }));
     expect(pressable("Running 2").props.accessibilityState).toEqual({ selected: true });
+  });
+
+  it("does not draw a lane's rows again as its list grows, unless it crosses two screens", () => {
+    act(() => { renderer = TestRenderer.create(screen(true)); });
+    const list = () => renderer!.root.findAll((node) => (node.type as unknown) === "FlatList")[0]!;
+    act(() => hostParentOf(list())!.props.onLayout({ nativeEvent: { layout: { height: 500 } } }));
+    act(() => list().props.onContentSizeChange(390, 600));
+    let rows = host.rowRenders;
+    // Each batch of mounted rows changes the measured height; the lane stays as it is drawn.
+    for (const height of [700, 820, 990]) act(() => list().props.onContentSizeChange(390, height));
+    expect(host.rowRenders).toBe(rows);
+    expect(hostsById("phone-scroll-actions")).toHaveLength(0);
+    // Past two screens the scroll actions show: that draws once.
+    rows = host.rowRenders;
+    act(() => list().props.onContentSizeChange(390, 1100));
+    expect(hostsById("phone-scroll-actions")).toHaveLength(1);
+    expect(host.rowRenders).toBeGreaterThan(rows);
+  });
+
+  it.each(["ios", "android"])("%s keeps the press-started pager animation free of subsequent offset prop writes", async (os) => {
+    (globalThis as { __rnMockOS?: string }).__rnMockOS = os;
+    const scrollTo = vi.fn();
+    await act(async () => {
+      renderer = TestRenderer.create(screen(true), { createNodeMock: (element) => (element.props as { testID?: string }).testID === "phone-lane-pager" ? { scrollTo } : null });
+    });
+    const pager = () => renderer!.root.find((node) => (node.type as unknown) === "ScrollView" && node.props.testID === "phone-lane-pager");
+    act(() => pager().props.onLayout({ nativeEvent: { layout: { x: 0, y: 0, width: 390, height: 600 } } }));
+    const initialOffset = pager().props.contentOffset;
+    scrollTo.mockClear();
+    let selectedAtTurn: unknown;
+    scrollTo.mockImplementation(() => { selectedAtTurn = pressable("Running 2").props.accessibilityState; });
+    act(() => pressable("Running 2").props.onPress());
+    // The page turn started while the old lane was still the board's; the render found the pager there.
+    expect(scrollTo).toHaveBeenCalledExactlyOnceWith({ x: 390, y: 0, animated: true });
+    expect(selectedAtTurn).toEqual({ selected: false });
+    expect(pressable("Running 2").props.accessibilityState).toEqual({ selected: true });
+    // Both native implementations apply changed offset props without animation.
+    // Observe the prop after the selected-lane render as well as the earlier command.
+    expect(pager().props.contentOffset).toEqual(initialOffset);
+    // A tab two lanes away is not mounted beside it: it jumps once the board draws it.
+    scrollTo.mockClear();
+    act(() => hostsById("phone-stat-done")[0]!.props.onPress());
+    expect(scrollTo).toHaveBeenCalledExactlyOnceWith({ x: 390 * 3, y: 0, animated: false });
+    expect(pager().props.contentOffset).toEqual(initialOffset);
+  });
+
+  it.each(["ios", "android"])("%s initializes a remembered pager lane and uses commands for layout changes and swipe settlement", async (os) => {
+    (globalThis as { __rnMockOS?: string }).__rnMockOS = os;
+    rememberLane("host-1", "done");
+    const scrollTo = vi.fn();
+    await act(async () => {
+      renderer = TestRenderer.create(screen(true), { createNodeMock: (element) => (element.props as { testID?: string }).testID === "phone-lane-pager" ? { scrollTo } : null });
+    });
+    const pager = () => hostsById("phone-lane-pager")[0]!;
+    const layout = (width: number, height = 600) => act(() => pager().props.onLayout({ nativeEvent: { layout: { x: 0, y: 0, width, height } } }));
+    const initialOffset = pager().props.contentOffset;
+    expect(initialOffset).toEqual({ x: 390 * 3, y: 0 });
+    expect(scrollTo).not.toHaveBeenCalled();
+    layout(360);
+    expect(scrollTo).toHaveBeenCalledExactlyOnceWith({ x: 360 * 3, y: 0, animated: false });
+    expect(pager().props.contentOffset).toEqual(initialOffset);
+    scrollTo.mockClear();
+    layout(360, 590);
+    expect(scrollTo).not.toHaveBeenCalled();
+    // The native swipe is already at its destination; state must not send it another command.
+    act(() => pager().props.onMomentumScrollEnd({ nativeEvent: { contentOffset: { x: 360 * 2, y: 0 } } }));
+    expect(pressable("Review 2").props.accessibilityState).toEqual({ selected: true });
+    expect(scrollTo).not.toHaveBeenCalled();
+    expect(pager().props.contentOffset).toEqual(initialOffset);
+    layout(844, 390);
+    expect(scrollTo).toHaveBeenCalledExactlyOnceWith({ x: 844 * 2, y: 0, animated: false });
+    expect(pager().props.contentOffset).toEqual(initialOffset);
   });
 
   it.each(["ios", "android", "web"])("%s shows the bottom shortcut only when the active lane exceeds two viewports, and ends the list clear of it", (os) => {
@@ -6795,7 +7283,8 @@ describe("Tasks board, phone", () => {
     }
   });
 
-  it("jumps without animation when reduced motion is on", () => {
+  it.each(["ios", "android"])("%s jumps without animation when reduced motion is on", async (os) => {
+    (globalThis as { __rnMockOS?: string }).__rnMockOS = os;
     let onReduce: (enabled: boolean) => void = () => {};
     const addListener = AccessibilityInfo.addEventListener;
     const subscription = vi.spyOn(AccessibilityInfo, "addEventListener").mockImplementation(((name: string, listener: (enabled: boolean) => void) => {
@@ -6806,7 +7295,15 @@ describe("Tasks board, phone", () => {
     try {
       const scrollToOffset = vi.fn();
       const scrollToIndex = vi.fn();
-      act(() => { renderer = TestRenderer.create(screen(true), { createNodeMock: (element) => element.type === "FlatList" ? { scrollToOffset, scrollToIndex } : null }); });
+      const scrollTo = vi.fn();
+      await act(async () => { renderer = TestRenderer.create(screen(true), { createNodeMock: (element) => {
+        if ((element.props as { testID?: string }).testID === "phone-lane-pager") return { scrollTo };
+        return element.type === "FlatList" ? { scrollToOffset, scrollToIndex } : null;
+      } }); });
+      const pager = () => hostsById("phone-lane-pager")[0]!;
+      const initialOffset = pager().props.contentOffset;
+      act(() => pager().props.onLayout({ nativeEvent: { layout: { x: 0, y: 0, width: 390, height: 600 } } }));
+      scrollTo.mockClear();
       act(() => onReduce(true));
       const list = renderer!.root.findAll((node) => (node.type as unknown) === "FlatList")[0]!;
       act(() => hostParentOf(list)!.props.onLayout({ nativeEvent: { layout: { height: 500 } } }));
@@ -6818,6 +7315,9 @@ describe("Tasks board, phone", () => {
       expect(scrollToOffset).toHaveBeenCalledWith({ offset: 0, animated: false });
       expect(scrollToOffset).toHaveBeenLastCalledWith({ offset: 938, animated: false });
       expect(scrollToIndex).not.toHaveBeenCalled();
+      act(() => pressable("Running 2").props.onPress());
+      expect(scrollTo).toHaveBeenCalledExactlyOnceWith({ x: 390, y: 0, animated: false });
+      expect(pager().props.contentOffset).toEqual(initialOffset);
     } finally {
       act(() => onReduce(false));
       subscription.mockRestore();
@@ -7098,7 +7598,11 @@ describe("Tasks board, phone", () => {
     await act(async () => { finish("done"); });
     expect(list().props.refreshing).toBe(false);
     const more = hostsById("phone-more")[0]!;
-    expect(more.find((node) => (node.type as unknown) === "Icon").props.name).toBe("MoreVertical");
+    const dots = hostsById("phone-more-dot");
+    expect(dots).toHaveLength(3);
+    for (const dot of dots) {
+      expect(dot.props.style).toMatchObject({ width: 3, height: 3, borderRadius: 1.5, backgroundColor: "#1b1b1f" });
+    }
     act(() => more.props.onPress());
     expect(hostsById("filter-sheet-refresh")).toHaveLength(0);
     expect(hostsById("filter-sheet-scroll")).toHaveLength(1);
@@ -7287,10 +7791,55 @@ describe("Tasks board, phone", () => {
     expect(openAgent).not.toHaveBeenCalled();
   });
 
+  it("closes the phone details sheet when its content leaves for translation settings", () => {
+    act(() => { renderer = TestRenderer.create(screen(true)); });
+    act(() => cards()[0]!.props.onSelect(cards()[0]!.props.card));
+    const sheet = renderer!.root.find((node) => typeof node.type === "function" && node.type.name === "DetailsSheetContent");
+    expect(renderer!.root.findAll((node) => (node.type as unknown) === "Modal")).toHaveLength(1);
+    act(() => sheet.props.onCloseSheet());
+    expect(renderer!.root.findAll((node) => (node.type as unknown) === "Modal")).toHaveLength(0);
+  });
+
+  it.each([false, true])("keeps the Android detail actions available with footer support %s", async (supported) => {
+    (globalThis as { __rnMockOS?: string }).__rnMockOS = "android";
+    (Modal as typeof Modal & { supportsFooter?: boolean }).supportsFooter = supported;
+    await act(async () => { renderer = TestRenderer.create(screen(true)); });
+    await act(async () => pressable("Running 2").props.onPress());
+    const running = cards().find((card) => card.props.card.id === "sample-running")!;
+    await act(async () => running.props.onSelect(running.props.card));
+    const content = renderer!.root.findByType(Modal.Content);
+    expect(Boolean(content.props.footer)).toBe(supported);
+    const bar = hostsById("detail-action-bar");
+    expect(bar).toHaveLength(1);
+    expect(hostsById("detail-bar-open")).toHaveLength(1);
+    expect(hostsById("detail-tab-short-scroll")).toHaveLength(1);
+    await act(async () => hostsById("detail-tab-info")[0]!.props.onPress());
+    expect(hostsById("detail-action-bar")).toHaveLength(1);
+    expect(hostsById("detail-bar-open")).toHaveLength(1);
+  });
+
+  it.each(["ios", "android", "web"])("answers a tool permission in its section, with no bottom bar, in the %s phone sheet", async (os) => {
+    (globalThis as { __rnMockOS?: string }).__rnMockOS = os;
+    await act(async () => { renderer = TestRenderer.create(screen(true)); });
+    const input = cards().find((card) => card.props.card.id === "sample-input")!;
+    await act(async () => input.props.onSelect(input.props.card));
+    expect(renderer!.root.findByType(TaskDetailCards).props).toMatchObject({ questionActionsInHeader: true, actions: false });
+    // As a question's: Open above the request's section, Allow and Deny inside it.
+    expect(hostsById("detail-action-bar")).toHaveLength(0);
+    const controls = hostsById("detail-question-controls")[0]!;
+    expect(controls.findAll((node) => typeof node.type === "string" && node.props.accessibilityRole === "button").map((node) => node.props.testID)).toEqual(["detail-bar-open"]);
+    const answers = hostsById("detail-permission-actions")[0]!.findAll((node) => typeof node.type === "string" && node.props.accessibilityRole === "button");
+    expect(answers.map((node) => node.props.accessibilityLabel)).toEqual(["Allow", "Deny"]);
+    expect(openAgent).not.toHaveBeenCalled();
+  });
+
   it.each(["ios", "android", "web"])("shows message and info tabs with a pinned action bar in the %s phone sheet", async (os) => {
     (globalThis as { __rnMockOS?: string }).__rnMockOS = os;
     await act(async () => { renderer = TestRenderer.create(screen(true)); });
-    await act(async () => cards()[0]!.props.onSelect(cards()[0]!.props.card));
+    // A running card: the waiting tool permission answers in its section instead of a bar.
+    await act(async () => pressable("Running 2").props.onPress());
+    const running = cards().find((card) => card.props.card.id === "sample-running")!;
+    await act(async () => running.props.onSelect(running.props.card));
     const detail = renderer!.root.findByType(TaskDetailCards);
     expect(detail.props).toMatchObject({ touch: true, tabs: true, scrollHeader: true, actions: false });
     const content = renderer!.root.find((node) => (node.type as unknown) === "ModalContent");
@@ -8100,6 +8649,34 @@ describe("Tasks board, new tasks", () => {
     onScreen("running", ["a"]);
     onScreen("running", ["a", "b", "fresh"]);
     expect(outlined("fresh")).toBe(false);
+  });
+
+  it("sees no new card on ios from what a restored lane reports before its restore scroll", async () => {
+    const { push, announce } = await mount(true, "ios");
+    act(() => hostsById("phone-stat-running")[0]!.props.onPress());
+    act(() => list("running").props.onScroll({ nativeEvent: { contentOffset: { x: 0, y: 420 }, contentSize: { height: 1800 }, layoutMeasurement: { height: 500 } } }));
+    act(() => renderer!.unmount());
+    const scrollToOffset = vi.fn();
+    await act(async () => { renderer = TestRenderer.create(screen(true), { createNodeMock: (element) => element.type === "FlatList" ? { scrollToIndex: vi.fn(), scrollToOffset } : null }); });
+    layOut(390);
+    expect(scrollToOffset).toHaveBeenCalledExactlyOnceWith({ offset: 420, animated: false });
+    // A task comes while the restore's scroll event has not reached the list yet.
+    await push(running("fresh", new Date().toISOString()));
+    await announce();
+    expect(newCardStore("host-1").pending("running")).toEqual(["fresh"]);
+    // Until that event, VirtualizedList reports the cards from offset 0, not the ones on screen.
+    onScreen("running", ["a", "b", "fresh"]);
+    expect(newCardStore("host-1").pending("running")).toEqual(["fresh"]);
+    // VirtualizedList calls onScroll, then reports the cards at the new offset, in one event.
+    const target = list("running");
+    const report = (target.props.viewabilityConfigCallbackPairs as { onViewableItemsChanged(info: unknown): void }[])[0]!;
+    act(() => {
+      target.props.onScroll({ nativeEvent: { contentOffset: { x: 0, y: 420 }, contentSize: { height: 1800 }, layoutMeasurement: { height: 500 } } });
+      report.onViewableItemsChanged({ viewableItems: [{ key: "b", item: null, index: 1, isViewable: true }], changed: [] });
+    });
+    expect(newCardStore("host-1").pending("running")).toEqual(["fresh"]);
+    onScreen("running", ["b", "fresh"]);
+    expect(newCardStore("host-1").pending("running")).toEqual([]);
   });
 
   it.each(["ios", "web"])("%s offers a pill for a new card below the screen, and scrolls to it", async (os) => {

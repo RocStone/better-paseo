@@ -13,7 +13,7 @@ vi.hoisted(() => {
 
 vi.mock("react-native", async () => import("./helpers/rn-mock"));
 vi.mock("@getpaseo/plugin/client", async (original) => ({ ...await original<object>(), useRpc: () => async () => ({ revealed: null, error: null }) }));
-vi.mock("@getpaseo/plugin/client/react-native", async () => {
+vi.mock("@getpaseo/plugin/client/ui", async () => {
   const react = await import("react");
   const rn = await import("./helpers/rn-mock");
   return {

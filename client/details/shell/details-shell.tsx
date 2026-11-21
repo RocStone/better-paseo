@@ -20,9 +20,10 @@
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { Animated, Modal, Platform, StyleSheet, View, useWindowDimensions, type ViewStyle } from "react-native";
 import { useRpc } from "@getpaseo/plugin/client";
-import { Icon } from "@getpaseo/plugin/client/react-native";
+import { Icon, useToast } from "@getpaseo/plugin/client/ui";
 import type { ExtendedThemeTokens } from "../../components/theme-tokens";
 import { DetailsShellContext, type BlockEntry, type Detent, type DetailsForm, type DetailsShellValue, type DetailsZoom } from "../contracts";
+import { TranslationSettingsParentCloseContext } from "../../translation/navigation";
 import { useBlock, useBlockList } from "../block-registry";
 import { detailsApi, useDetails } from "../details-store";
 import { DETAILS_BREAKPOINTS, floatingWidth } from "../layout-model";
@@ -38,6 +39,7 @@ import { useReducedMotion } from "../../ui/use-reduced-motion";
 import { holdHostGestures } from "../../ui/hold-host-gestures";
 import { useListScrollLock } from "../../ui/scroll-anchor";
 import { revealPathRpc } from "../../../shared/file-rpc";
+import { revealWithSetting } from "../../i18n/file-open-error";
 import { DETAILS_MOTION, animate } from "./motion";
 import { OVERDRAG, panelResponder, type DragTarget } from "./gestures";
 import { useSafeInsets } from "./safe-area";
@@ -121,10 +123,11 @@ function OpenShell({ agentId, tokens, entry, openId, detent, fullscreen, storeFo
   const [insets, insetProbe] = useSafeInsets();
   const lockList = useListScrollLock();
   const revealPath = useRpc(revealPathRpc);
+  const toast = useToast();
   const cwd = useRef<string | undefined>(undefined);
   const reveal = useCallback((path: string) => {
-    void revealPath({ cwd: cwd.current ?? "", path }).catch(() => {});
-  }, [revealPath]);
+    revealWithSetting(revealPath, toast, cwd.current ?? "", path);
+  }, [revealPath, toast]);
   const paths = usePathContextValue(agentId, reveal);
   cwd.current = paths.cwd;
 
@@ -412,6 +415,7 @@ function OpenShell({ agentId, tokens, entry, openId, detent, fullscreen, storeFo
   }), [toggleFullscreen, fullscreenOn, close, entry.id, memory, wrapOn, toggleWrap, tokens]);
 
   const content = (
+    <TranslationSettingsParentCloseContext.Provider value={close}>
     <DetailsShellContext.Provider value={shellValue}>
       <PreviewChromeContext.Provider value="details">
         <HoverPreviewContext.Provider value>
@@ -449,6 +453,7 @@ function OpenShell({ agentId, tokens, entry, openId, detent, fullscreen, storeFo
         </HoverPreviewContext.Provider>
       </PreviewChromeContext.Provider>
     </DetailsShellContext.Provider>
+    </TranslationSettingsParentCloseContext.Provider>
   );
 
   const frame = insets === null ? null : form === "side" ? (

@@ -1,18 +1,25 @@
 import React, { useCallback, useMemo, useEffect, useLayoutEffect, useReducer, useRef, useState, useSyncExternalStore } from "react";
 import { createDetailChrome, useDetailChrome, type DetailChrome, type DetailChromeState } from "./detail-chrome";
-import { Animated, Platform, Pressable, ScrollView, StyleSheet, View, useWindowDimensions, type LayoutChangeEvent, type TextStyle, type ViewStyle } from "react-native";
+import { Animated, Platform, Pressable, ScrollView, StyleSheet, View, useWindowDimensions, type GestureResponderEvent, type LayoutChangeEvent, type TextStyle, type ViewStyle } from "react-native";
 import type { PluginTheme } from "@getpaseo/plugin";
 import { useRpc } from "@getpaseo/plugin/client";
-import { Icon, ScrollView as SheetScrollView, useToast } from "@getpaseo/plugin/client/react-native";
+import { Icon, ScrollView as SheetScrollView, useToast } from "@getpaseo/plugin/client/ui";
 import { revealPathRpc } from "../../../shared/file-rpc";
+import { fileOpenError } from "../../i18n/file-open-error";
 import { openLink } from "../../components/open-link";
 import { MarkdownView } from "../../components/markdown/markdown-view";
+import { useSelectionActions } from "../../components/selection-actions";
+import { SyncedLoader } from "../../ui/synced-loader";
+import { SelectionTranslationScope } from "../../translation/ui";
+import { InlineTranslation, InlineTranslateButton, InlineTranslationNotice, type InlineTranslationState } from "../../translation/inline";
 import { variantMetrics } from "../../components/markdown/render/styles";
-import { mix, useThemeTokens, withAlpha } from "../../components/theme-tokens";
-import { useEnhancerPreferences } from "../../preferences";
+import { mix, useThemeTokens } from "../../components/theme-tokens";
+import { getEnhancerPreferences, useEnhancerPreferences } from "../../preferences";
 import { TaskText as Text, TASK_MONO as MONO, HOST_FONT as F, HOST_LINE, useTasksFontScale, useTasksFontAdjustment, taskControlHeight } from "../typography";
 import { HoverPreviewContext } from "../../ui/hover-preview";
 import { useHover } from "../../ui/use-hover";
+import { hoverFill } from "../hover-fill";
+import { HoverControl } from "../hover-control";
 import { useReducedMotion } from "../../ui/use-reduced-motion";
 import { useInputCapabilities } from "../../ui/use-input-capabilities";
 import { useCopy } from "../../ui/use-copy";
@@ -26,7 +33,8 @@ import type { FirstPrompt } from "../data/first-prompt";
 import type { LastHumanMessage } from "../data/last-human-message";
 import type { LastMessage } from "../data/last-message";
 import { formatClockTime, formatDuration, formatRelative, formatTokenTotal, since, tildePath } from "./format";
-import { cardStrings } from "./strings";
+import { cardStrings, requestTitle } from "./strings";
+import { PlanViewButton, TaskPlanDialog } from "./plan-dialog";
 import { taskTokens, type TaskTokens } from "./tokens";
 import { TagMark } from "./tag-mark";
 import { SheetFoot, SheetScrollRoom, useAfterSheetMotion } from "../sheet-motion";
@@ -59,7 +67,7 @@ import { ActionRow, layoutCeil, useActionFit } from "./action-row";
 import { CardButton } from "./action-buttons";
 import { ActionPressable } from "./action-pressable";
 import { liftedButtonOutline, liftStyle, scaleStyle, surfaceLift } from "./surface-lift";
-import { arrowInset, buttonHue, CONFIRM_STOP_ICON, requestLook, webTransition, type CardButtonLook } from "./action-style";
+import { arrowInset, buttonHue, CONFIRM_STOP_ICON, keepsAnswerLabel, requestLook, webTransition, type CardButtonLook } from "./action-style";
 import { buttonOutline, MOTION } from "../board/board-style";
 import { useBreathing, useFlash } from "../board/breathing";
 import {
@@ -67,6 +75,7 @@ import {
   detailHero,
   detailSections,
   replyBeforeHuman,
+  requestInSection,
   errorLines,
   formatSpan,
   formatTurnClock,
@@ -81,6 +90,8 @@ import { detailGutter, detailScrollProps, outsideIndicator } from "./detail-scro
 import { sectionClosed, useSectionChoices, useSearchSectionChoices } from "./detail-collapse";
 import { prepareSubtaskToggle, SubtaskPanel } from "./subtask-panel";
 import { tipProps } from "./card-hints";
+import { FoldedText } from "./folded-text";
+import type { QuestionContext } from "../data/question-context";
 import { AvailabilityTag } from "./availability-tag";
 import { highlightText } from "./search-highlight";
 import { detailSearchHits, searchRanges, taskSearchHits } from "../data/search-hits";
@@ -180,7 +191,10 @@ export interface TaskDetailCardsProps extends TimeSource {
   compact?: boolean;
   onClose?(): void;
   onSheetClose?(): void;
-  /** Put question controls beside the question instead of in the sheet footer. */
+  /**
+   * Answer a waiting request, of any kind, under it, with the task's controls
+   * on a row of their own above its section, instead of in the sheet footer.
+   */
   questionActionsInHeader?: boolean;
   onMenu?(point: { x: number; y: number }): void;
   sheetToggle?: { full: boolean; label: string; onPress(): void };
@@ -202,12 +216,16 @@ export interface TaskDetailCardsProps extends TimeSource {
   onJumpWithScroll?(agentId: string, offsets: DetailScrollOffsets): void;
   onSubtaskMenu?(agentId: string, point: { x: number; y: number }): void;
   titleUpdates?: TitleUpdateControl;
+  /** The real session whose settings and model translate this card's messages. */
+  translationAgentId?: string;
   /** The task's first prompt, read from its timeline; absent leaves the section out (the settings preview). */
   firstPrompt?: { prompt: FirstPrompt; load(): void } | null;
   /** The last message a person sent, read back from the timeline's tail; absent (or the first prompt again) leaves the section out. */
   humanMessage?: { prompt: LastHumanMessage; load(): void } | null;
   /** The agent's latest reply, read from its timeline's tail; absent leaves the section out. */
   lastMessage?: { prompt: LastMessage; load(): void } | null;
+  /** What the agent wrote before its pending question, above the inline answer; absent when the latest reply already shows it. */
+  questionContext?: { context: QuestionContext; retry(): void } | null;
   /** A running task's whole session's tokens, from the provider's session files; absent leaves them out of the running turn. */
   sessionTokens?: SessionTokens | null;
   /** Unarchive for an archived parent, and for an archived card itself; absent where this host cannot. */
@@ -360,7 +378,9 @@ export function TaskDetailCards(given: TaskDetailCardsProps) {
   });
   const edgeListener = useRef(props.onScrollEdge);
   edgeListener.current = props.onScrollEdge;
-  const questionInHeader = card.permission?.kind === "question" && !!props.onPermission && (props.permissionButtons?.length ?? 0) > 0 && (props.questionActionsInHeader === true || props.tabs === true && props.actions !== false);
+  const questionInHeader = !!props.onPermission && requestInSection(card, props.permissionButtons ?? []) && (props.questionActionsInHeader === true || props.tabs === true && props.actions !== false);
+  const touchQuestion = props.touch === true && questionInHeader && card.permission?.kind === "question" && props.permissionButtons?.some((button) => button.kind === "question") === true;
+  const pendingQuestions = touchQuestion ? null : <PendingQuestions card={card} tokens={tokens} language={props.language} theme={props.theme} compact={props.compact} submit={props.submitQuestions} source={props.questionDialog} context={props.questionContext} />;
   const tabs = props.tabs === true;
   const scrollHeader = props.scrollHeader === true;
   useEffect(() => {
@@ -460,7 +480,7 @@ export function TaskDetailCards(given: TaskDetailCardsProps) {
                 }}
               >
                 {(id === "info" ? info : messages).map((section, index) => sectionView(section, index > 0))}
-                {id === "messages" ? <PendingQuestions card={card} tokens={tokens} language={props.language} theme={props.theme} compact={props.compact} submit={props.submitQuestions} source={props.questionDialog} /> : null}
+                {id === "messages" ? pendingQuestions : null}
               </DetailTabPage>
             ))}
           </SheetScrollView>
@@ -479,7 +499,7 @@ export function TaskDetailCards(given: TaskDetailCardsProps) {
               <View style={props.touch ? { flex: 1, minHeight: 0, display: tab === "messages" ? "flex" : "none" } : { position: "absolute", inset: 0, ...({ visibility: tab === "messages" ? "visible" : "hidden" } as object) }}>
                 <ScrollView key={`${card.id}-messages`} style={{ flex: 1 }} {...detailScrollProps("inset")} scrollEventThrottle={16} onScroll={(event) => publishBody("messages", scrollEdgePatch(event.nativeEvent))} onLayout={(event) => publishBody("messages", { viewport: event.nativeEvent.layout.height })} onContentSizeChange={(_width, height) => publishBody("messages", { content: height })} testID="detail-tab-messages-scroll">
                   {messages.map((section, index) => sectionView(section, index > 0))}
-                  <PendingQuestions card={card} tokens={tokens} language={props.language} theme={props.theme} compact={props.compact} submit={props.submitQuestions} source={props.questionDialog} />
+                  {pendingQuestions}
                 </ScrollView>
               </View>
             </TabPages>
@@ -507,7 +527,7 @@ export function TaskDetailCards(given: TaskDetailCardsProps) {
         <View style={{ flex: 1, minWidth: 0 }}>
           <ScrollView key={`${card.id}-sections`} style={{ flex: 1 }} contentContainerStyle={{ paddingTop: 2, paddingBottom: 4 }} {...detailScrollProps("inset")} testID="detail-column-sections">
             {rightOrder.map((section, index) => sectionView(section, index > 0))}
-            <PendingQuestions card={card} tokens={tokens} language={props.language} theme={props.theme} compact={props.compact} submit={props.submitQuestions} source={props.questionDialog} />
+            {pendingQuestions}
           </ScrollView>
         </View>
       </View>
@@ -519,10 +539,10 @@ export function TaskDetailCards(given: TaskDetailCardsProps) {
       {props.scrollBody ? (
         <ScrollView key={card.id} style={{ flexGrow: 0, flexShrink: 1 }} contentContainerStyle={{ paddingBottom: 4 }} {...detailScrollProps("inset")} testID="detail-body-scroll">
           {sections}
-          <PendingQuestions card={card} tokens={tokens} language={props.language} theme={props.theme} compact={props.compact} submit={props.submitQuestions} source={props.questionDialog} />
+          {pendingQuestions}
         </ScrollView>
       ) : (
-        <View style={{ paddingBottom: 4 }}>{sections}<PendingQuestions card={card} tokens={tokens} language={props.language} theme={props.theme} compact={props.compact} submit={props.submitQuestions} source={props.questionDialog} /></View>
+        <View style={{ paddingBottom: 4 }}>{sections}{pendingQuestions}</View>
       )}
     </View>
   );
@@ -572,12 +592,12 @@ export function EdgeActionBar(props: React.ComponentProps<typeof DetailActionBar
   return <DetailActionBar {...bar} contentUnder={under} />;
 }
 
-function PendingQuestions({ card, tokens, language, theme, compact, submit, source }: { card: TaskCard; tokens: TaskTokens; language: TasksLanguage; theme: PluginTheme; compact?: boolean; submit?: (state: QuestionDialogState) => Promise<void>; source?: QuestionDialogStore }) {
+function PendingQuestions({ card, tokens, language, theme, compact, submit, source, context }: { card: TaskCard; tokens: TaskTokens; language: TasksLanguage; theme: PluginTheme; compact?: boolean; submit?: (state: QuestionDialogState) => Promise<void>; source?: QuestionDialogStore; context?: { context: QuestionContext; retry(): void } | null }) {
   const questions = card.lane === "needs_input" ? card.permission?.questions : undefined;
   if (!questions?.length) return null;
   if (submit && source) return <View testID="detail-pending-questions" style={{ paddingTop: 12 }}>
     <Text style={{ paddingHorizontal: 12, fontSize: F.sm, fontWeight: "600", color: tokens.foreground }}>{language === "zh" ? "待回答问题" : "Questions awaiting an answer"}</Text>
-    <TaskInlineQuestions card={card} source={source} submit={submit} theme={theme} language={language} compact={compact} />
+    <TaskInlineQuestions card={card} source={source} submit={submit} theme={theme} language={language} compact={compact} context={context} />
   </View>;
   return <View testID="detail-pending-questions" style={{ paddingHorizontal: 12, paddingVertical: 12, gap: 12 }}>
     <Text style={{ fontSize: F.sm, fontWeight: "600", color: tokens.foreground }}>{language === "zh" ? "待回答问题" : "Questions awaiting an answer"}</Text>
@@ -631,8 +651,8 @@ function DetailTab(props: { id: "info" | "messages"; selected: boolean; tokens: 
       accessibilityState={{ selected: props.selected }}
       onPress={props.onPress}
       style={({ pressed }) => {
-        const lift = surfaceLift(hovered, pressed);
-        return { flex: 1, minWidth: 0, height: taskControlHeight(props.touch ? 30 : 32, scale), borderRadius: 999, borderWidth: StyleSheet.hairlineWidth, backgroundColor: props.selected ? props.tokens.surface2 : "transparent", flexDirection: "row" as const, alignItems: "center" as const, justifyContent: "center" as const, gap: 4, paddingHorizontal: 6, ...liftStyle(props.tokens, lift, { border: props.selected ? props.tokens.surface2 : props.tokens.card.pillBorder }), ...scaleStyle(lift.scale) };
+        const base = props.selected ? props.tokens.surface2 : props.tokens.card.background;
+        return { flex: 1, minWidth: 0, height: taskControlHeight(props.touch ? 30 : 32, scale), borderRadius: 999, borderWidth: StyleSheet.hairlineWidth, borderColor: props.selected ? props.tokens.surface2 : props.tokens.card.pillBorder, backgroundColor: hoverFill(base, props.tokens.foreground, hovered, pressed, props.selected ? base : "transparent"), flexDirection: "row" as const, alignItems: "center" as const, justifyContent: "center" as const, gap: 4, paddingHorizontal: 6 };
       }}
     >
       <Icon name={props.id === "info" ? "Info" : "MessageSquare"} size={props.touch ? 12 : 14} color={color} />
@@ -683,6 +703,7 @@ function DetailStatusRow(props: Inner & { fixed?: boolean }) {
 
 function DetailHeader(props: Inner & { hideStatus?: boolean }) {
   const { card, m, tokens, touch = false } = props;
+  const { hovered: backHovered, hoverProps: backHoverProps } = useHover();
   const titleUpdate = useTitleUpdateState(props.titleUpdates, card.id);
   const streamedTitle = titleUpdate.state === "running" ? titleUpdate.text?.replace(/\s+/g, " ").trim() : undefined;
   const shownTitle = useRevealedTitle(streamedTitle || (titleUpdate.state === "done" ? titleUpdate.title : card.title), Boolean(streamedTitle) || titleUpdate.state === "done");
@@ -701,7 +722,7 @@ function DetailHeader(props: Inner & { hideStatus?: boolean }) {
   const iconSize = props.compact ? 12 : 11;
   const chipHeight = props.compact ? TOUCH_CARD.chip : DETAIL_CARD.chip;
   const hero = detailHero(card);
-  const questionInHeader = props.questionActionsInHeader === true && card.permission?.kind === "question" && !!props.onPermission && (props.permissionButtons?.length ?? 0) > 0;
+  const questionInHeader = props.questionActionsInHeader === true && !!props.onPermission && requestInSection(card, props.permissionButtons ?? []);
   const mode = card.modeLabel ? modeIcon(card.provider, card.modeLabel) : null;
   const stop = stopLabel(props);
   // An archived task can be brought back; one of an archived workspace has nothing of its own to unarchive.
@@ -806,12 +827,13 @@ function DetailHeader(props: Inner & { hideStatus?: boolean }) {
           accessibilityLabel={props.strings.back(props.back.title)}
           {...tipProps(props.strings.back(props.back.title))}
           onPress={props.back.onPress}
+          {...backHoverProps}
           testID="detail-back"
-          style={{ minHeight: touch ? 36 : 24, flexDirection: "row", alignItems: "center", gap: 6, marginBottom: 2 }}
+          style={({ pressed }) => ({ minHeight: touch ? 36 : 24, flexDirection: "row", alignItems: "center", gap: 6, marginBottom: 2, borderRadius: 6, backgroundColor: hoverFill(tokens.card.background, tokens.foreground, backHovered, pressed, "transparent") })}
         >
-          <Icon name="ArrowLeft" size={14} color={tokens.foregroundMuted} />
+          <Icon name="CornerLeftUp" size={14} color={tokens.foregroundMuted} />
           <Text numberOfLines={1} style={{ flex: 1, fontSize: small, color: tokens.foregroundMuted }}>
-            {props.strings.back(props.back.title)}
+            {props.back.title}
           </Text>
           {Platform.OS === "web" && !touch ? <KeyCap label="Esc" tokens={tokens} /> : null}
         </Pressable>
@@ -823,9 +845,9 @@ function DetailHeader(props: Inner & { hideStatus?: boolean }) {
             {props.notice.text}
           </Text>
           {props.notice.action ? (
-            <Pressable accessibilityRole="button" {...tipProps(props.notice.action.label)} onPress={props.notice.action.onPress} hitSlop={6}>
+            <HoverControl base={tokens.surface1} foreground={tokens.foreground} accessibilityRole="button" {...tipProps(props.notice.action.label)} onPress={props.notice.action.onPress} hitSlop={6}>
               <Text style={{ fontSize: small, fontWeight: "500", color: tokens.accentText }}>{props.notice.action.label}</Text>
-            </Pressable>
+            </HoverControl>
           ) : null}
         </View>
       ) : null}
@@ -852,7 +874,7 @@ function DetailHeader(props: Inner & { hideStatus?: boolean }) {
               </FoldedText>}
         </View>
         <View pointerEvents="box-none" style={{ position: "absolute", right: 0, top: 0 }}>
-          <TitleUndo agentId={card.id} control={props.titleUpdates} tokens={tokens} language={props.language} touch={touch} fadeColor={tokens.card.background} />
+          <TitleUndo agentId={card.id} control={props.titleUpdates} tokens={tokens} language={props.language} touch={touch} fadeColor={tokens.card.background} unifiedHover />
         </View>
       </View>
       <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 6, marginTop: 8 }} testID="detail-agent">
@@ -939,7 +961,8 @@ function DetailHeader(props: Inner & { hideStatus?: boolean }) {
         </ActionRow>
       ) : null}
       {questionInHeader ? <DetailActionBar {...props} controlsOnly onClose={props.onSheetClose} /> : null}
-      <View testID={card.permission?.kind === "question" ? "detail-question-section" : undefined} style={{ marginTop: 12, ...(card.permission?.kind === "question" ? { paddingTop: 12, borderTopWidth: 0.5, borderTopColor: tokens.border } : null) }}>
+      {/* A waiting request, of any kind, starts a section under a rule, as on its card. */}
+      <View testID={hero === "permission" ? "detail-question-section" : undefined} style={{ marginTop: 12, ...(hero === "permission" ? { paddingTop: 12, borderTopWidth: 0.5, borderTopColor: tokens.border } : null) }}>
         {hero === "turn" ? <RunningTurn {...props} /> : null}
         {hero === "permission" ? <PermissionBlock {...props} actions={questionInHeader ? true : props.actions} /> : null}
         {hero === "error" ? <ErrorBlock {...props} /> : null}
@@ -1015,25 +1038,51 @@ function PermissionBlock(props: Inner) {
   const small = F.sm;
   const waited = since(card.timing.attentionAt, props.now) ?? since(card.timing.turnStartedAt, props.now);
   const buttons = props.actions !== false && props.onPermission ? (props.permissionButtons ?? []) : [];
+  const questionButton = props.touch && permission.kind === "question" ? buttons.find((button) => button.kind === "question") : undefined;
+  // A plan's summary is its title, set as text; any other is the command, file or question as written.
+  const plan = permission.kind === "plan";
+  const prose = permission.kind === "question" || plan;
+  // "View plan": the plan request it was opened on, so a newer plan closes it.
+  const [planOpen, setPlanOpen] = useState<string | null>(null);
   return (
     <View testID="detail-permission" style={{ borderWidth: 1, borderColor: tokens.border, borderRadius: 10, backgroundColor: colors.sunk }}>
       <View style={{ flexDirection: "row", alignItems: "center", gap: 8, paddingHorizontal: 12, paddingTop: 10 }}>
         <Icon name={PERMISSION_ICONS[permission.kind]} size={m.icon} color={tokens.status.warning} />
         <Text numberOfLines={2} style={{ flex: 1, fontSize: m.font, fontWeight: "500", color: tokens.foreground }}>
-          {permission.title}
+          {requestTitle(permission, cardStrings(props.language))}
         </Text>
         {permission.remaining > 0 ? <Text style={{ fontSize: small, color: tokens.foregroundMuted }}>{words.moreRequests(permission.remaining)}</Text> : null}
+        {permission.body ? (
+          <PlanViewButton unifiedHover tokens={tokens} language={props.language} lineHeight={HOST_LINE.base} onPress={() => setPlanOpen(permission.requestId)} testID="detail-view-plan" />
+        ) : null}
       </View>
-      {permission.summary ? (
+      {permission.summary && permission.kind === "question" && (!props.touch || questionButton) ? (
+        <Text style={{ marginHorizontal: 12, marginTop: 8, fontSize: F.base, lineHeight: HOST_LINE.base, color: tokens.foreground }}>{permission.summary}</Text>
+      ) : permission.summary ? (
         <View style={{ marginHorizontal: 12, marginTop: 8, paddingHorizontal: 10, paddingVertical: 8, borderRadius: 6, borderWidth: 1, borderColor: tokens.border, backgroundColor: tokens.card.background }}>
-          <Text style={{ fontSize: permission.kind === "question" ? F.base : F.sm, lineHeight: permission.kind === "question" ? HOST_LINE.base : CODE_LINE, fontFamily: MONO, color: tokens.foreground }}>{permission.summary}</Text>
+          <Text style={{ fontSize: prose ? F.base : F.sm, lineHeight: prose ? HOST_LINE.base : CODE_LINE, fontFamily: plan || (props.compact && permission.kind === "question") ? undefined : MONO, fontWeight: plan ? "500" : undefined, color: tokens.foreground }}>{permission.summary}</Text>
         </View>
       ) : null}
-      {buttons.length > 0 ? (
+      {planOpen !== null && planOpen === permission.requestId && permission.body ? (
+        <TaskPlanDialog text={permission.body} theme={props.theme} language={props.language} touch={props.touch === true} onClose={() => setPlanOpen(null)} />
+      ) : null}
+      {questionButton ? (
+        <View testID="detail-permission-buttons" style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center", justifyContent: "space-between", gap: 8, paddingHorizontal: 12, paddingTop: 10, paddingBottom: 12 }}>
+          {waited !== null ? (
+            <View style={{ flexDirection: "row", alignItems: "center", gap: 4 }}>
+              <Icon name="Hourglass" size={12} color={tokens.foregroundMuted} />
+              <Text style={{ fontSize: F.sm, color: tokens.foregroundMuted, fontVariant: ["tabular-nums"] }}>{formatSpan(waited)}</Text>
+            </View>
+          ) : null}
+          <View testID="detail-permission-actions" style={{ marginLeft: "auto", maxWidth: "100%", flexShrink: 1 }}>
+            <RequestButton button={questionButton} tokens={tokens} height={props.touch ? 36 : 34} keepLabel onPress={() => props.onPermission?.(questionButton)} />
+          </View>
+        </View>
+      ) : buttons.length > 0 ? (
         <View testID="detail-permission-buttons" style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: 8, paddingHorizontal: 12, paddingTop: 10, paddingBottom: 12 }}>
-          <ActionRow style={{ width: "auto", flexGrow: 1, flexShrink: 1, flexBasis: 0, ...(props.touch && Platform.OS !== "web" ? { paddingVertical: 4, alignItems: "center" } : null) }} testID="detail-permission-actions">
+          <ActionRow stack={buttons.some((button) => (props.compact || !button.answers) && keepsAnswerLabel(button, buttons))} style={{ width: "auto", flexGrow: 1, flexShrink: 1, flexBasis: 0, ...(props.touch && Platform.OS !== "web" ? { paddingVertical: 4, alignItems: "center" } : null) }} testID="detail-permission-actions">
             {buttons.map((button) => (
-              <RequestButton key={button.key} button={button} tokens={tokens} disabled={button.kind === "respond" && !!taskOperationIssue(card, "permission")} height={props.touch ? 36 : 34} onPress={() => props.onPermission?.(button)} />
+              <RequestButton key={button.key} button={button} tokens={tokens} keepLabel={keepsAnswerLabel(button, buttons)} wrapOption={props.compact} disabled={button.kind === "respond" && !!taskOperationIssue(card, "permission")} height={props.touch ? 36 : 34} onPress={() => props.onPermission?.(button)} />
             ))}
           </ActionRow>
           {waited !== null ? (
@@ -1051,7 +1100,7 @@ function PermissionBlock(props: Inner) {
 }
 
 /** The card's permission buttons, by `requestLook`: Allow's accent, Deny's danger, "Answer"'s amber, the rest plain. */
-function RequestButton(props: { button: PermissionButton; tokens: TaskTokens; height: number; disabled?: boolean; onPress(): void }) {
+function RequestButton(props: { button: PermissionButton; tokens: TaskTokens; height: number; disabled?: boolean; keepLabel?: boolean; wrapOption?: boolean; onPress(): void }) {
   const { button, tokens } = props;
   const { hovered, hoverProps } = useHover();
   const hue = buttonHue(tokens, requestLook(button));
@@ -1059,7 +1108,9 @@ function RequestButton(props: { button: PermissionButton; tokens: TaskTokens; he
   const height = taskControlHeight(props.height, scale);
   // A question's option is shown as written: no Check or X reads a meaning into it, and its label never folds.
   const option = !!button.answers;
-  const fit = useActionFit(button.label, `${scale}|${useWindowDimensions().fontScale}`, props.height, 28 + (option ? 0 : 13 + 4) + 1, false, requestLook(button) === "primary", option);
+  // One of several answers with the same icon keeps its words too (`keepsAnswerLabel`): its row stacks rather than cut them.
+  const keep = !option && props.keepLabel === true;
+  const fit = useActionFit(button.label, `${scale}|${useWindowDimensions().fontScale}`, props.height, 28 + (option ? 0 : 13 + 4) + 1, false, requestLook(button) === "primary", option, keep || (option && props.wrapOption === true));
   const icon = option ? null : button.kind === "question" ? "MessageCircleQuestion" : button.kind === "open" ? "ArrowUpRight" : button.action.behavior === "allow" ? "Check" : "X";
   return (
     <Pressable
@@ -1072,26 +1123,24 @@ function RequestButton(props: { button: PermissionButton; tokens: TaskTokens; he
       onPress={props.onPress}
       {...hoverProps}
       style={({ pressed }) => {
-        const lift = surfaceLift(hovered && !props.disabled, pressed && !props.disabled);
         return {
           // A written option may wrap, so it grows taller rather than wider.
-          ...(option ? { minHeight: height, paddingVertical: 4 } : { height }),
+          ...(option || keep ? { minHeight: height, paddingVertical: 4 } : { height }),
           flexDirection: "row" as const,
           gap: 4,
           paddingHorizontal: 14,
           borderRadius: 6,
-          ...liftedButtonOutline(tokens, hue.border, requestLook(button) === "plain", lift),
+          ...buttonOutline(hue.border),
           opacity: props.disabled ? 0.5 : 1,
-          backgroundColor: tokens.card.background,
+          backgroundColor: hoverFill(tokens.card.background, tokens.foreground, hovered && !props.disabled, pressed && !props.disabled),
           alignItems: "center" as const,
           justifyContent: "center" as const,
           ...fit.style,
-          ...scaleStyle(lift.scale),
         };
       }}
     >
       {icon ? <Icon name={icon} size={13} color={hue.color} /> : null}
-      {fit.iconOnly ? null : <Text onLayout={fit.labelLayout} numberOfLines={option ? undefined : 1} style={{ flexShrink: option ? 1 : 0, ...(option ? { textAlign: "center" as const } : null), fontSize: F.sm, fontWeight: "500", color: hue.color }}>
+      {fit.iconOnly ? null : <Text onLayout={fit.labelLayout} numberOfLines={option || keep ? undefined : 1} style={{ flexShrink: option || keep ? 1 : 0, ...fit.labelStyle, ...(option || keep ? { textAlign: "center" as const } : null), fontSize: F.sm, fontWeight: "500", color: hue.color }}>
         {button.label}
       </Text>}
     </Pressable>
@@ -1126,16 +1175,8 @@ function ErrorBlock(props: Inner) {
         <Icon name={stopped ? "OctagonX" : "CircleAlert"} size={m.icon} color={stopped ? tokens.foregroundMuted : tokens.danger} />
         <Text style={{ flex: 1, fontSize: m.font, fontWeight: "500", color: tokens.foreground }}>{stopped ? words.stoppedTitle : words.failedTitle}</Text>
         {body ? (
-          <Pressable
-            accessibilityRole="button"
-            accessibilityLabel={words.copyError}
-            {...tipProps(words.copyError)}
-            onPress={() => void copy(text, { label: "Copy error" })}
-            hitSlop={6}
-            style={{ width: 24, height: 24, marginRight: -6, alignItems: "center", justifyContent: "center", borderRadius: 6 }}
-          >
-            <Icon name={copied ? "Check" : "Copy"} size={14} color={copied ? tokens.success : tokens.foregroundMuted} />
-          </Pressable>
+          <DetailCopyButton label={words.copyError} tokens={tokens} copied={copied} base={stopped ? colors.sunk : colors.errorFill}
+            target={24} hitSlop={6} marginRight={-6} onPress={() => void copy(text, { label: "Copy error" })} />
         ) : null}
       </View>
       {body ? (
@@ -1149,7 +1190,33 @@ function ErrorBlock(props: Inner) {
 
 // ---- Sections --------------------------------------------------------------
 
-function Section(props: Inner & { section: DetailSection; replyStreaming: boolean; waitingAfterHuman: boolean; closed: boolean; divider: boolean; onToggleSection(closed: boolean): void }) {
+function DetailCopyButton(props: { label: string; tokens: TaskTokens; copied: boolean; testID?: string; base?: string; target?: number; hitSlop?: number; marginRight?: number; onPress(event: GestureResponderEvent): void }) {
+  const { hovered, hoverProps } = useHover();
+  const iconSize = 14;
+  const fillSize = 24;
+  return (
+    <Pressable accessibilityRole="button" accessibilityLabel={props.label} {...tipProps(props.label)} {...hoverProps}
+      onPress={props.onPress} hitSlop={props.hitSlop ?? 4} testID={props.testID}
+      style={{ width: props.target ?? 32, height: props.target ?? 32, marginRight: props.marginRight, alignItems: "center", justifyContent: "center" }}>
+      {({ pressed }) => <View pointerEvents="none" testID={props.testID ? `${props.testID}-fill` : undefined} style={{ width: fillSize, height: fillSize, borderRadius: 6, alignItems: "center", justifyContent: "center", backgroundColor: hoverFill(props.base ?? props.tokens.card.background, props.tokens.foreground, hovered, pressed, "transparent") }}>
+        <Icon name={props.copied ? "Check" : "Copy"} size={iconSize} color={props.copied ? props.tokens.success : props.tokens.foregroundMuted} />
+      </View>}
+    </Pressable>
+  );
+}
+
+type SectionProps = Inner & { section: DetailSection; replyStreaming: boolean; waitingAfterHuman: boolean; closed: boolean; divider: boolean; onToggleSection(closed: boolean): void };
+
+function Section(props: SectionProps) {
+  const read = props.section === "prompt" ? props.firstPrompt : props.section === "human" ? props.humanMessage : props.section === "message" ? props.lastMessage : null;
+  if (!props.translationAgentId || read?.prompt.state !== "ready") return <SectionContent {...props} />;
+  return <InlineTranslation agentId={props.translationAgentId} kind={props.section === "message" ? "assistant_message" : "user_message"}
+    text={read.prompt.text} streaming={props.section === "message" && props.replyStreaming}>
+    {(translation) => <SectionContent {...props} translation={translation} />}
+  </InlineTranslation>;
+}
+
+function SectionContent(props: SectionProps & { translation?: InlineTranslationState }) {
   const { card, m, tokens, section, gutter = 0 } = props;
   const words = cardStrings(props.language).details;
   const reducedMotion = useReducedMotion();
@@ -1186,36 +1253,41 @@ function Section(props: Inner & { section: DetailSection; replyStreaming: boolea
   // The last subtask row keeps 8 (touch 10) above the next hairline.
   const bottom = section === "subtasks" && m === TOUCH_CARD ? 10 : 8;
   const toggle = () => { if (!reducedMotion) prepareSubtaskToggle(props.closed); props.onToggleSection(!props.closed); };
+  // The translation and its status show in the section's body: translating a closed one opens it.
+  const inline = props.translation;
+  const translateButton = inline ? <InlineTranslateButton state={props.closed && !inline.active
+    ? { ...inline, toggle: () => { toggle(); inline.toggle(); } } : inline} theme={props.theme} base={tokens.card.background} testID={`${testID}-translate`} /> : null;
   return (
     <View testID={testID} onLayout={onLayout}>
       {props.divider ? <View style={{ height: StyleSheet.hairlineWidth, marginLeft: m.padH, marginRight: m.padH - gutter, backgroundColor: tokens.card.border }} /> : null}
       <View style={{ paddingTop: 4, paddingBottom: bottom, paddingLeft: m.padH - 6, paddingRight: m.padH - 6 - gutter }}>
         {messageSection ? (
-          <Pressable {...ROW_ROLE} accessibilityLabel={props.closed ? words.expand(title) : words.collapse(title)} {...tipProps(props.closed ? words.expand(title) : words.collapse(title))} accessibilityState={{ expanded: !props.closed }} onPress={toggle} testID={`${testID}-heading`} style={{ flexDirection: "row", alignItems: "center", paddingLeft: 6 }}>
+          <HoverControl base={tokens.card.background} foreground={tokens.foreground} {...ROW_ROLE} accessibilityLabel={props.closed ? words.expand(title) : words.collapse(title)} {...tipProps(props.closed ? words.expand(title) : words.collapse(title))} accessibilityState={{ expanded: !props.closed }} onPress={toggle} testID={`${testID}-heading`} style={{ flexDirection: "row", alignItems: "center", paddingLeft: 6, borderRadius: 6 }}>
             <View style={{ width: 23, height: 24, paddingLeft: 5, alignItems: "flex-start", justifyContent: "center" }}>
               <Icon name={section === "message" ? "MessageSquareText" : section === "human" ? "Send" : "MessageCircle"} size={14} color={tokens.foregroundMuted} />
             </View>
-            <Text style={{ flex: 1, fontSize: F.sm, fontWeight: "600", color: tokens.foreground }} numberOfLines={1}>{title}</Text>
-            {messageTime ? <Text {...tipProps(formatFullStamp(new Date(at)))} numberOfLines={1} style={{ flexShrink: 1, fontSize: F.sm, color: tokens.foregroundMuted, fontVariant: ["tabular-nums"] }}>{messageTime}</Text> : null}
+            <Text testID={`${testID}-heading-title`} style={{ flexShrink: 1, fontSize: F.sm, fontWeight: "600", color: tokens.foreground }} numberOfLines={1}>{title}</Text>
+            {messageTime ? <Text testID={`${testID}-heading-time`} {...tipProps(formatFullStamp(new Date(at)))} numberOfLines={1} style={{ flexShrink: 1, marginLeft: 6, fontSize: F.sm, color: tokens.foregroundMuted, fontVariant: ["tabular-nums"] }}>{`· ${messageTime}`}</Text> : null}
+            <View style={{ flex: 1 }} />
+            {translateButton}
             {read?.prompt.state === "ready" ? (
-              <Pressable accessibilityRole="button" accessibilityLabel={copyLabel} {...tipProps(copyLabel)} onPress={(event) => { event.stopPropagation(); void copy(read.prompt.state === "ready" ? read.prompt.text : "", { label: copyToast }); }} hitSlop={4} testID={`${testID}-copy`} style={{ width: 32, height: 32, alignItems: "center", justifyContent: "center" }}>
-                <Icon name={copied ? "Check" : "Copy"} size={14} color={copied ? tokens.success : tokens.foregroundMuted} />
-              </Pressable>
+              <DetailCopyButton label={copyLabel} tokens={tokens} copied={copied} testID={`${testID}-copy`} target={28} hitSlop={6} onPress={(event) => { event.stopPropagation(); void copy(read.prompt.state === "ready" ? read.prompt.text : "", { label: copyToast }); }} />
             ) : null}
-            <View style={{ width: 32, height: 32, alignItems: "center", justifyContent: "center" }}>
+            <View testID={`${testID}-chevron`} style={{ width: 28, height: 28, alignItems: "center", justifyContent: "center" }}>
               <SectionChevron closed={props.closed} color={tokens.foregroundMuted} />
             </View>
-          </Pressable>
+          </HoverControl>
         ) : (
           <SectionHeading m={m} tokens={tokens} title={title} summary={summary} summaryTip={messageTime ? formatFullStamp(new Date(at)) : undefined} trailing={heading?.check ? <Icon name="CircleCheck" size={14} color={tokens.success} /> : undefined} closed={props.closed} language={props.language} onPress={toggle} />
         )}
         <SubtaskPanel expanded={!props.closed} testID={`${testID}-panel`}>
+          {props.translation ? <InlineTranslationNotice state={props.translation} theme={props.theme} /> : null}
           {section === "prompt" ? (
-          <TimelineTextBody {...props} read={props.firstPrompt} id="detail-prompt" none={words.promptNone} error={words.promptError} copyLabel={words.copyPrompt} copyToast="Copy prompt" />
+          <TimelineTextBody {...props} translation={props.translation} read={props.firstPrompt} id="detail-prompt" none={words.promptNone} error={words.promptError} copyLabel={words.copyPrompt} copyToast="Copy prompt" />
         ) : section === "human" ? (
-          <TimelineTextBody {...props} read={props.humanMessage} id="detail-human" none={words.humanNone} error={words.humanError} copyLabel={words.copyHuman} copyToast="Copy sent message" waitingAfter={props.waitingAfterHuman} />
+          <TimelineTextBody {...props} translation={props.translation} read={props.humanMessage} id="detail-human" none={words.humanNone} error={words.humanError} copyLabel={words.copyHuman} copyToast="Copy sent message" waitingAfter={props.waitingAfterHuman} />
         ) : section === "message" ? (
-          <TimelineTextBody {...props} read={props.lastMessage} id="detail-message" none={words.messageNone} error={words.messageError} copyLabel={words.copyMessage} copyToast="Copy message" streaming={props.replyStreaming} flash />
+          <TimelineTextBody {...props} translation={props.translation} read={props.lastMessage} id="detail-message" none={words.messageNone} error={words.messageError} copyLabel={words.copyMessage} copyToast="Copy message" streaming={props.replyStreaming} flash />
           ) : section === "properties" ? (
             <Properties {...props} />
           ) : section === "subtasks" ? (
@@ -1265,7 +1337,7 @@ function SectionHeading(props: { m: Metrics; tokens: TaskTokens; title: string; 
       accessibilityState={{ expanded: !props.closed }}
       onPress={props.onPress}
       {...hoverProps}
-      style={{ height: taskControlHeight(m.heading, scale), paddingHorizontal: 6, borderRadius: 6, flexDirection: "row", alignItems: "center", gap: 4 }}
+      style={({ pressed }) => ({ height: taskControlHeight(m.heading, scale), paddingHorizontal: 6, borderRadius: 6, flexDirection: "row", alignItems: "center", gap: 4, backgroundColor: hoverFill(tokens.card.background, tokens.foreground, hovered, pressed, "transparent") })}
     >
       <Text style={{ fontSize: font, fontWeight: "500", color }}>{props.title}</Text>
       <SectionChevron closed={props.closed} color={color} />
@@ -1313,7 +1385,7 @@ function Properties(props: Inner) {
   const openFolder = async () => {
     try {
       const result = await revealPath({ cwd: location.cwd, path: location.cwd });
-      if (result.error) toast.error(details.openFolderError(result.error));
+      if (result.error) toast.error(details.openFolderError(fileOpenError(result, props.language)));
     } catch (error) {
       toast.error(details.openFolderError(error instanceof Error ? error.message : String(error)));
     }
@@ -1649,7 +1721,7 @@ function PropertyRow(props: {
       ref={rowRef}
       {...(Platform.OS === "web" ? null : hoverProps)}
       testID={props.testID}
-      style={({ pressed }) => ({ ...style, backgroundColor: hovered || pressed ? colors.rowHover : "transparent" })}
+      style={({ pressed }) => ({ ...style, backgroundColor: pressed ? colors.rowPress : hovered ? colors.rowHover : "transparent" })}
     >
       {content}
     </Pressable>
@@ -1658,6 +1730,8 @@ function PropertyRow(props: {
 
 function RowAction(props: { icon: string; label: string; tokens: TaskTokens; onPress(): void }) {
   const { hovered, hoverProps } = useHover();
+  const iconSize = 14;
+  const fillSize = 24;
   return (
     <Pressable
       accessibilityRole="button"
@@ -1668,12 +1742,11 @@ function RowAction(props: { icon: string; label: string; tokens: TaskTokens; onP
         props.onPress();
       }}
       {...hoverProps}
-      style={({ pressed }) => {
-        const lift = surfaceLift(hovered, pressed);
-        return { width: 24, height: 24, borderRadius: 5, alignItems: "center" as const, justifyContent: "center" as const, backgroundColor: "transparent", ...liftStyle(props.tokens, lift), ...scaleStyle(lift.scale) };
-      }}
+      style={{ width: 24, height: 24, alignItems: "center", justifyContent: "center" }}
     >
-      <Icon name={props.icon} size={14} color={hovered ? props.tokens.foreground : props.tokens.foregroundMuted} />
+      {({ pressed }) => <View pointerEvents="none" style={{ width: fillSize, height: fillSize, borderRadius: 6, alignItems: "center", justifyContent: "center", backgroundColor: hoverFill(props.tokens.card.background, props.tokens.foreground, hovered, pressed, "transparent") }}>
+        <Icon name={props.icon} size={iconSize} color={hovered ? props.tokens.foreground : props.tokens.foregroundMuted} />
+      </View>}
     </Pressable>
   );
 }
@@ -1708,6 +1781,7 @@ function Subtasks(props: Inner) {
           titleUpdates={props.titleUpdates}
           touch={props.touch === true || Platform.OS !== "web"}
           backdrop={tokens.card.background}
+          unifiedUndo
           testIDPrefix="detail-subtask"
           muted={mixed && child.status === "done"}
           {...time}
@@ -1791,7 +1865,6 @@ function repeatsFirstPrompt(human: LastHumanMessage | undefined, first: FirstPro
 const PROMPT_LINES = 10;
 /** A card's title folds after five lines; anything shorter stays whole. */
 const TITLE_LINES = 5;
-const FADE_STEPS = 6;
 
 /**
  * Text read from the task's timeline: the first prompt in full (the title
@@ -1811,6 +1884,7 @@ function TimelineTextBody(props: Inner & {
   flash?: boolean;
   streaming?: boolean;
   waitingAfter?: boolean;
+  translation?: InlineTranslationState;
 }) {
   const { tokens, id } = props;
   const words = cardStrings(props.language).details;
@@ -1820,6 +1894,7 @@ function TimelineTextBody(props: Inner & {
   const expanded = query ? searchFold.query === query ? !searchFold.closed : true : open;
   const preferences = useEnhancerPreferences();
   const prose = useThemeTokens(props.theme, preferences);
+  useSelectionActions(prose, !!props.translationAgentId && preferences.selectionActions);
   const adjustment = useTasksFontAdjustment();
   const first = props.read;
   const breathing = useBreathing(first?.prompt.state === "loading");
@@ -1831,14 +1906,14 @@ function TimelineTextBody(props: Inner & {
   const revealPath = useRpc(revealPathRpc);
   const toast = useToast();
   // Kept the same across renders: a new one would draw the prose again.
-  const reveal = useRef({ revealPath, toast, words, cwd: props.card.location.cwd });
-  reveal.current = { revealPath, toast, words, cwd: props.card.location.cwd };
+  const reveal = useRef({ revealPath, toast, words, language: props.language, cwd: props.card.location.cwd });
+  reveal.current = { revealPath, toast, words, language: props.language, cwd: props.card.location.cwd };
   const onRevealPath = useCallback((path: string) => {
-    const { revealPath: open, toast: notice, words: text, cwd } = reveal.current;
+    const { revealPath: open, toast: notice, words: text, language, cwd } = reveal.current;
     const fail = (error: string) => notice.error(text.openLinkError(error));
-    open({ cwd, path })
+    open({ cwd, path, expectedApp: getEnhancerPreferences().fileOpenApp })
       .then((result) => {
-        if (result.error) fail(result.error);
+        if (result.error) fail(fileOpenError(result, language));
       })
       .catch((error: unknown) => fail(error instanceof Error ? error.message : String(error)));
   }, []);
@@ -1861,19 +1936,20 @@ function TimelineTextBody(props: Inner & {
       <View style={{ minHeight: props.touch ? 36 : 28, paddingHorizontal: 6, flexDirection: "row", alignItems: "center", gap: 8 }} testID={`${id}-state`}>
         {note ? <Text style={{ flexShrink: 1, fontSize: small, color: tokens.foregroundMuted }}>{note}</Text> : null}
         {retry ? (
-          <Pressable accessibilityRole="button" {...tipProps(words.promptLoad)} onPress={first.load} hitSlop={6} testID={`${id}-load`}>
+          <HoverControl base={tokens.card.background} foreground={tokens.foreground} accessibilityRole="button" {...tipProps(words.promptLoad)} onPress={first.load} hitSlop={6} testID={`${id}-load`}>
             <Text style={{ fontSize: small, fontWeight: "500", color: tokens.accentText }}>{words.promptLoad}</Text>
-          </Pressable>
+          </HoverControl>
         ) : null}
       </View>
     );
   }
-  const text = prompt.text;
+  const text = props.translation?.active && props.translation.view?.status === "done" ? props.translation.view.result.translation : prompt.text;
   const lines = errorLines(text);
   const long = lines.length > PROMPT_LINES || text.length > 600;
+  const markdown = <MarkdownView text={text} streaming={streaming} renderText={renderText} tokens={prose} variant={preferences.markdownVariant} compact={props.touch === true} size={font} onRevealPath={remote ? undefined : onRevealPath} />;
   return (
     <View style={{ paddingHorizontal: 6, paddingTop: 4 }}>
-      <View>
+      <View style={props.translation?.active && props.translation.view && ["running", "settings-loading", "config-loading"].includes(props.translation.view.status) ? { opacity: 0.55 } : undefined}>
         {props.flash ? (
           <Animated.View pointerEvents="none" testID={`${id}-flash`} style={{ position: "absolute", top: 0, right: 0, bottom: 0, left: 0, borderRadius: 8, backgroundColor: props.theme.colors.accent, opacity: flashOpacity }} />
         ) : null}
@@ -1891,7 +1967,11 @@ function TimelineTextBody(props: Inner & {
           onToggle={() => query ? setSearchFold({ query, closed: expanded }) : setOpen((was) => !was)}
         >
           <HoverPreviewContext.Provider value>
-            <MarkdownView text={text} streaming={streaming} renderText={renderText} tokens={prose} variant={preferences.markdownVariant} compact={props.touch === true} size={font} onRevealPath={remote ? undefined : onRevealPath} />
+            {props.translationAgentId ? (
+              <SelectionTranslationScope agentId={props.translationAgentId} kind={id === "detail-message" ? "assistant_message" : "user_message"} streaming={streaming}>
+                {markdown}
+              </SelectionTranslationScope>
+            ) : markdown}
           </HoverPreviewContext.Provider>
         </FoldedText>
       </View>
@@ -1901,105 +1981,11 @@ function TimelineTextBody(props: Inner & {
   );
 }
 
-/**
- * Text that folds under a fade after `limit` lines, with the same
- * "Show all · N lines" row under it as every message body. A caller that knows
- * the text's line count passes `long` and `total`; the card's title leaves
- * both out, so the fold measures the laid-out text: a title that fits stays
- * whole, and a narrower sidebar folds sooner.
- */
-function FoldedText(props: {
-  id: string;
-  language: TasksLanguage;
-  tokens: TaskTokens;
-  /** One line's height, already scaled as the text is. */
-  line: number;
-  limit: number;
-  expanded: boolean;
-  /** Whether the text overflows the fold; measured when absent. */
-  long?: boolean;
-  /** The text's line count; measured when absent. */
-  total?: number;
-  fadeColor: string;
-  touch?: boolean;
-  onToggle(): void;
-  children: React.ReactNode;
-}) {
-  const reduced = useReducedMotion();
-  const words = cardStrings(props.language).details;
-  const [height, setHeight] = useState<number | null>(null);
-  const progress = useRef(new Animated.Value(props.expanded ? 1 : 0)).current;
-  const target = useRef(props.expanded);
-  const limit = props.limit * props.line;
-  // Android's text box keeps a few font-padding pixels past its lines; count
-  // whole lines so a title that just fits five stays whole.
-  const overflows = height !== null && Math.round(height / props.line) > props.limit;
-  // Unmeasured text stays clamped: a long title must not paint open for a frame.
-  const long = props.long ?? (height === null || overflows);
-  useEffect(() => {
-    if (reduced || !long || height === null) {
-      target.current = props.expanded;
-      progress.setValue(props.expanded ? 1 : 0);
-      return;
-    }
-    if (target.current === props.expanded) return;
-    target.current = props.expanded;
-    const animation = Animated.timing(progress, { toValue: props.expanded ? 1 : 0, duration: props.expanded ? 180 : 140, easing: MOTION.ease, useNativeDriver: false, isInteraction: false });
-    animation.start();
-    return () => animation.stop();
-  }, [props.expanded, long, reduced, progress, height]);
-  const folded = long && !props.expanded;
-  const style = !long || (props.expanded && (reduced || height === null)) ? null
-    : reduced || height === null ? { maxHeight: limit, overflow: "hidden" as const }
-    : { maxHeight: progress.interpolate({ inputRange: [0, 1], outputRange: [Math.min(limit, height), height] }), overflow: "hidden" as const };
-  const total = props.total ?? (height === null ? 0 : Math.max(1, Math.round(height / props.line)));
-  return (
-    <View>
-      <Animated.View style={style} testID={`${props.id}-text`}>
-        <View testID={`${props.id}-measure`} onLayout={(event) => setHeight(event.nativeEvent.layout.height)}>
-          {props.children}
-        </View>
-        {folded ? (
-          // A heading or code block cuts the last line anywhere: fade it out.
-          <View testID={`${props.id}-fade`} pointerEvents="none" style={{ position: "absolute", left: 0, right: 0, bottom: 0, height: props.line, flexDirection: "column" }}>
-            {Array.from({ length: FADE_STEPS }, (_, step) => (
-              <View key={step} style={{ flex: 1, backgroundColor: withAlpha(props.fadeColor, (step + 1) / FADE_STEPS) }} />
-            ))}
-          </View>
-        ) : null}
-      </Animated.View>
-      {long && total > 0 ? (
-        <View style={{ minHeight: props.touch ? 36 : 28, flexDirection: "row", alignItems: "center", gap: 8 }}>
-          <Pressable accessibilityRole="button" accessibilityState={{ expanded: props.expanded }} {...tipProps(props.expanded ? words.showLess : words.showAll(total))} onPress={props.onToggle} hitSlop={4} testID={`${props.id}-more`} style={{ flexDirection: "row", alignItems: "center", gap: 4 }}>
-            <Icon name={props.expanded ? "ChevronsUp" : "ChevronsDown"} size={14} color={props.tokens.foregroundMuted} />
-            <Text style={{ fontSize: F.sm, color: props.tokens.foregroundMuted }}>{props.expanded ? words.showLess : words.showAll(total)}</Text>
-          </Pressable>
-        </View>
-      ) : null}
-    </View>
-  );
-}
-
-const REPLY_LOADER_FRAMES = [
-  [1, 0, 0.78, 0, 0.56, 0.34], [0.78, 1, 0.56, 0, 0.34, 0],
-  [0.56, 0.78, 0.34, 1, 0, 0], [0.34, 0.56, 0, 0.78, 0, 1],
-  [0, 0.34, 0, 0.56, 1, 0.78], [0, 0, 1, 0.34, 0.78, 0.56],
-] as const;
-
 function ReplyLoading(props: { tokens: TaskTokens; language: TasksLanguage; waiting?: boolean; id?: string }) {
-  const reduced = useReducedMotion();
-  const [step, setStep] = useState(() => Math.floor((Date.now() % 950) * 6 / 950));
-  useEffect(() => {
-    if (reduced) return;
-    const timer = setInterval(() => setStep(Math.floor((Date.now() % 950) * 6 / 950)), 950 / 6);
-    return () => clearInterval(timer);
-  }, [reduced]);
   const label = props.language === "zh" ? (props.waiting ? "等待输出" : "正在回复") : (props.waiting ? "Waiting for reply" : "Replying");
   return (
     <View testID={props.id ?? "detail-message-working"} accessibilityRole="progressbar" accessibilityLabel={label} style={{ flexDirection: "row", alignItems: "center", gap: 10, paddingLeft: props.waiting ? 6 : 0, paddingTop: 8 }}>
-      <View style={{ width: 14, height: 14, alignItems: "center", justifyContent: "center" }}><View testID="detail-message-working-grid" style={{ width: 26 / 3, height: 14, flexDirection: "row", flexWrap: "wrap", columnGap: 2, rowGap: 2 }}>
-        {REPLY_LOADER_FRAMES[reduced ? 0 : step]!.map((opacity, index) => <View key={index} style={{ width: 10 / 3, height: 10 / 3, borderRadius: 2, backgroundColor: props.tokens.foreground, opacity }} />)}
-      </View></View>
+      <SyncedLoader color={props.tokens.foreground} gridTestID="detail-message-working-grid" />
       <Text style={{ fontSize: F.sm, color: props.tokens.foregroundMuted }}>{label}</Text>
     </View>
   );
@@ -2094,6 +2080,8 @@ function KeyCap(props: { label: string; tokens: TaskTokens }) {
 /** A header icon button, matching the toolbar's quiet outline on web. */
 export function RoundIcon(props: { icon: string; label: string; size: number; iconSize: number; tokens: TaskTokens; active?: boolean; onPress(): void; testID?: string }) {
   const { hovered, hoverProps } = useHover();
+  const fillSize = 24;
+  const base = props.active ? props.tokens.surface2 : props.tokens.card.background;
   return (
     <Pressable
       accessibilityRole="button"
@@ -2103,24 +2091,23 @@ export function RoundIcon(props: { icon: string; label: string; size: number; ic
       onPress={props.onPress}
       {...hoverProps}
       testID={props.testID}
-      style={({ pressed }) => {
-        const lift = surfaceLift(hovered, pressed);
-        return {
+      style={{
           width: props.size,
           height: props.size,
           marginVertical: -(props.size - 18) / 2,
-          borderRadius: Platform.OS === "web" ? 7 : props.size / 2,
+          borderRadius: 6,
           borderWidth: Platform.OS === "web" ? StyleSheet.hairlineWidth : 0,
-          borderColor: hovered ? props.tokens.border : "transparent",
+          borderColor: "transparent",
           alignItems: "center" as const,
           justifyContent: "center" as const,
-          backgroundColor: props.active ? props.tokens.surface2 : "transparent",
-          ...liftStyle(props.tokens, lift, Platform.OS === "web" ? { border: hovered ? props.tokens.border : "transparent" } : {}),
-          ...scaleStyle(lift.scale),
-        };
+          backgroundColor: props.active ? base : "transparent",
       }}
     >
-      <Icon name={props.icon} size={props.iconSize} color={props.active ? props.tokens.accent : hovered ? props.tokens.foreground : props.tokens.foregroundMuted} />
+      {({ pressed }) => <View pointerEvents="none" testID={props.testID ? `${props.testID}-fill` : undefined}
+        style={{ width: fillSize, height: fillSize, borderRadius: 6, alignItems: "center", justifyContent: "center",
+          backgroundColor: hoverFill(base, props.tokens.foreground, hovered, pressed, "transparent") }}>
+        <Icon name={props.icon} size={props.iconSize} color={props.active ? props.tokens.accent : hovered ? props.tokens.foreground : props.tokens.foregroundMuted} />
+      </View>}
     </Pressable>
   );
 }
@@ -2170,7 +2157,7 @@ function OutlineButton(props: {
   const chrome = 2 * (props.grow ? 10 : 12) + (leading ? 15 : 0) + (props.hint ? hintWidth : 0) + (props.trailing ? 14 : 0) + (pieces - 1) * gap + 1;
   const fit = useActionFit(props.label, `${scale}|${props.font}|${useWindowDimensions().fontScale}`, props.height, chrome);
   return (
-    <ActionPressable lift={props.grow ? "row" : "control"}
+    <ActionPressable flat lift={props.grow ? "row" : "control"}
       accessibilityRole="button"
       accessibilityLabel={props.label}
       hitSlop={Platform.OS !== "web" ? 4 : undefined}
@@ -2187,8 +2174,8 @@ function OutlineButton(props: {
         height: taskControlHeight(props.height, scale),
         paddingHorizontal: props.grow ? 10 : 12,
         borderRadius: 8,
-        ...liftedButtonOutline(tokens, hue.border, look === "plain", surfaceLift(hovered, pressed && !disabled, undefined, props.grow ? "row" : "control")),
-        backgroundColor: tokens.card.background,
+        ...buttonOutline(hue.border),
+        backgroundColor: hoverFill(tokens.card.background, tokens.foreground, hovered, pressed && !disabled),
         flexDirection: "row" as const,
         alignItems: "center" as const,
         gap,
@@ -2245,6 +2232,7 @@ export function DetailActionBar(given: {
   flushBottom?: boolean;
   /** The page still runs under this bar, so it casts the same edge the tabs do. */
   contentUnder?: boolean;
+  /** Only the task's controls (Stop, Open, Close), above a waiting request whose section holds its answers. */
   controlsOnly?: boolean;
 }) {
   const props = withoutServerActions(given);
@@ -2273,6 +2261,7 @@ export function DetailActionBar(given: {
   const ordered = [...respond].sort((a, b) => (a.action.behavior === "allow" ? 1 : 0) - (b.action.behavior === "allow" ? 1 : 0));
   const pairedOpen = !!props.onClose && (ownOpen || parentOpens) && !answer;
   if (props.controlsOnly) {
+    // An unknown request's "Answer" already opens the tab.
     const showOpen = !buttons.some((button) => button.kind === "open");
     return (
       <ActionRow testID="detail-question-controls" style={{ marginTop: 12, justifyContent: "flex-end" }}>
@@ -2454,7 +2443,7 @@ function BarButton(props: { tokens: TaskTokens; icon?: string; glyph?: (color: s
   // A bar button spans its share of the bar, wider than a finger; a square one is covered by it.
   const liftAs = square || props.grow === false ? "control" : "row";
   return (
-    <ActionPressable lift={liftAs}
+    <ActionPressable flat lift={liftAs}
       accessibilityRole="button"
       accessibilityLabel={props.label}
       hitSlop={Platform.OS !== "web" ? 4 : undefined}
@@ -2471,8 +2460,8 @@ function BarButton(props: { tokens: TaskTokens; icon?: string; glyph?: (color: s
         flexShrink: square ? 0 : 1,
         paddingHorizontal: square ? 0 : padding,
         borderRadius: compact ? 8 : 10,
-        ...liftedButtonOutline(tokens, hue.border, look === "plain", surfaceLift(hovered, pressed && !disabled, undefined, liftAs)),
-        backgroundColor: tokens.card.background,
+        ...buttonOutline(hue.border),
+        backgroundColor: hoverFill(tokens.card.background, tokens.foreground, hovered, pressed && !disabled),
         opacity: disabled ? 0.6 : 1,
         flexDirection: "row",
         alignItems: "center",

@@ -1,6 +1,6 @@
 import React, { useLayoutEffect, useRef, useState } from "react";
 import { Animated, View } from "react-native";
-import { Icon } from "@getpaseo/plugin/client/react-native";
+import { Icon } from "@getpaseo/plugin/client/ui";
 import type { PluginTheme } from "@getpaseo/plugin";
 import { HOST_FONT as F, useTasksFontScale } from "../typography";
 import { useReducedMotion } from "../../ui/use-reduced-motion";
@@ -93,7 +93,7 @@ export function PhoneSearch(props: {
               style={{ flex: 1, minWidth: 0, padding: 0, fontSize: Math.round(F.base * scale), color: colors.foreground }}
             />
             {props.query ? (
-              <HoverPressable lift="toolbar" accessibilityRole="button" accessibilityLabel={props.clear} testID="phone-search-clear" hitSlop={10} onPress={() => props.onChange("")} style={(hovered, pressed, input) => ({ borderRadius: 4, ...liftStyle(() => taskTokens(theme), surfaceLift(hovered, pressed, undefined, "toolbar", input)) })}>
+              <HoverPressable hoverTheme={theme} lift="toolbar" accessibilityRole="button" accessibilityLabel={props.clear} testID="phone-search-clear" hitSlop={10} onPress={() => props.onChange("")} style={(hovered, pressed, input) => ({ borderRadius: 7.5, ...liftStyle(() => taskTokens(theme), surfaceLift(hovered, pressed, undefined, "toolbar", input)) })}>
                 <Icon name="X" size={15} color={colors.foregroundMuted} />
               </HoverPressable>
             ) : null}

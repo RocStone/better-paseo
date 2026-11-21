@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { assistantRows } from "../../client/assistant-transform";
+import { assistantRows, hasUiFence } from "../../client/assistant-transform";
 
 const longReply = Array.from({ length: 80 }, (_, index) =>
   `## Section ${index}\n\n${"A complete paragraph with **formatting**. ".repeat(20)}\n\n`).join("");
@@ -12,6 +12,8 @@ describe("long reply history rows", () => {
     expect(Math.max(...rows.map((row) => row.data.text.length))).toBeLessThan(2000);
     expect(rows.filter((row) => "messageText" in row.data)).toHaveLength(1);
     expect(rows.at(-1)!.data).toMatchObject({ messageText: longReply });
+    // No other row carries the whole reply again.
+    expect(rows.filter((row) => Object.values(row.data).includes(longReply))).toHaveLength(1);
   });
 
   it("keeps the streaming reply in one stable slot and keeps short replies unchanged", () => {
@@ -48,5 +50,42 @@ describe("long reply history rows", () => {
     const referenced = `${longReply}\n[reference][target]\n\n[target]: https://example.com\n`;
     expect(assistantRows(referenced, "complete")).toHaveLength(1);
     expect(assistantRows(`${longReply}\nfootnote[^1]\n\n[^1]: note\n`, "complete")).toHaveLength(1);
+  });
+});
+
+describe("ui fence yield", () => {
+  it("reports a message whose ui or app fence another plugin renders live", () => {
+    expect(hasUiFence(`Intro\n\n\`\`\`ui\nCard("Hi", [])\n\`\`\`\n`)).toBe(true);
+    expect(hasUiFence(`\`\`\`app\n<b>hi</b>\n\`\`\``)).toBe(true);
+    expect(hasUiFence(`~~~UI\nCard("Hi", [])\n~~~`)).toBe(true);
+    expect(hasUiFence("   \`\`\`app x\n<b>hi</b>")).toBe(true);
+  });
+
+  it("keeps plain markdown and ordinary code fences", () => {
+    expect(hasUiFence("Just **markdown**")).toBe(false);
+    expect(hasUiFence("```ts\nconst one = 1;\n```")).toBe(false);
+    expect(hasUiFence("```uish\nnot the ui language\n```")).toBe(false);
+    expect(hasUiFence("```ui.json\n{}\n```")).toBe(false);
+    expect(hasUiFence("```ui+json\n{}\n```")).toBe(false);
+    expect(hasUiFence("```app.html\n<b>hi</b>\n```")).toBe(false);
+    expect(hasUiFence("Text with ```ui mid-line is not a fence")).toBe(false);
+    expect(hasUiFence("~~~~\n```\nui\n```\n~~~~")).toBe(false);
+  });
+
+  it("ignores a ui fence nested inside another fenced block", () => {
+    expect(hasUiFence("```markdown\n```ui\nCard()\n```\n```")).toBe(false);
+  });
+
+  it("yields a streaming fence that has not closed yet", () => {
+    expect(hasUiFence("Reply so far\n\n```ui\nCard(\"Ping", "streaming")).toBe(true);
+  });
+
+  it("waits for a streaming language label to finish before handing off", () => {
+    expect(hasUiFence("```app", "streaming")).toBe(false);
+    expect(hasUiFence("```applescript\n", "streaming")).toBe(false);
+    expect(hasUiFence("```ui", "streaming")).toBe(false);
+    expect(hasUiFence("```ui.json\n", "streaming")).toBe(false);
+    expect(hasUiFence("```ui\n", "streaming")).toBe(true);
+    expect(hasUiFence("```ui", "complete")).toBe(true);
   });
 });

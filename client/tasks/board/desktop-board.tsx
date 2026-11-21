@@ -1,6 +1,6 @@
 import React, { memo, useCallback, useDeferredValue, useEffect, useLayoutEffect, useMemo, useReducer, useRef, useState, useSyncExternalStore, type RefObject } from "react";
 import { Animated, findNodeHandle, PanResponder, Platform, Pressable, ScrollView, View, type GestureResponderEvent, type FlatList as NativeFlatList, type TextInput as NativeTextInput } from "react-native";
-import { FlatList, Icon, Modal } from "@getpaseo/plugin/client/react-native";
+import { FlatList, Icon, Modal } from "@getpaseo/plugin/client/ui";
 import type { PluginScreenProps } from "@getpaseo/plugin/client";
 import type { PluginTheme } from "@getpaseo/plugin";
 import { TaskText as Text, HOST_FONT as F, HOST_LINE, laneTitle, TasksTypography, TasksTypographyScale, useTasksFontScale, taskControlHeight } from "../typography";
@@ -223,7 +223,7 @@ export function DesktopBoard(props: {
   const setPreference = useCallback((update: (current: SidebarPreference) => SidebarPreference) => {
     setPreferenceState((current) => {
       const next = update(current);
-      writeSidebarPreference(next);
+      writeSidebarPreference(next, current);
       return next;
     });
   }, []);
@@ -427,17 +427,17 @@ export function DesktopBoard(props: {
   props.handlers.current = {
     reveal,
     // A long press on a compact or touch card: the same as a click.
-    details(card, preview) {
-      showCard(card, preview);
+    details(card, preview, parent) {
+      showCard(card, preview, parent);
     },
   };
 
   // A click, tap or keyboard preview puts a card in the sidebar.
   // Selecting a card brings a put-away sidebar up for the moment.
   const showCard = useCallback(
-    (card: TaskCard, preview = false) => {
+    (card: TaskCard, preview = false, parent?: string) => {
       if (!preview) setFocus(null);
-      dispatch({ type: "click", id: card.id });
+      dispatch({ type: "click", id: card.id, parent });
       const now = latest.current;
       if (!now.open) setShown("card");
       if (!now.narrow && now.preferred) return;
@@ -1699,7 +1699,7 @@ function DesktopLaneView(props: DesktopLaneProps) {
 
   if (props.collapsed) {
     return clip(
-      <HoverPressable
+      <HoverPressable hoverTheme={theme}
         ref={pillRef}
         lift={false}
         accessibilityRole="button"
@@ -1749,7 +1749,7 @@ function DesktopLaneView(props: DesktopLaneProps) {
         {isHistoryLane(lane.id) ? (
           <Text style={{ fontSize: F.sm, color: colors.foregroundMuted }}>{strings.windows[board.params.doneWindow ?? board.defaults.doneWindow]}</Text>
         ) : null}
-        <HoverPressable
+        <HoverPressable hoverTheme={theme}
           accessibilityRole="button"
           accessibilityLabel={strings.collapse}
           {...collapseTap.pressIn}

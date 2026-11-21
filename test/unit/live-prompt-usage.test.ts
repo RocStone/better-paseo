@@ -26,6 +26,10 @@ vi.mock("@getpaseo/plugin/client", async () => {
     useRpc: () => async () => null,
   };
 });
+vi.mock("@getpaseo/plugin/client/ui", async (original) => ({
+  ...(await original<typeof import("@getpaseo/plugin/client/ui")>()),
+  useToast: () => ({ show() {}, error() {} }),
+}));
 vi.mock("../../client/ui/chat-composer", async () => {
   const ReactModule = await import("react");
   return { ChatComposerContext: ReactModule.createContext(null) };
@@ -36,7 +40,8 @@ vi.mock("../../client/preferences", () => ({
     toolDetail: "collapsed", markdownVariant: "document", pathDisplay: "relative", previewWrap: true,
   }),
 }));
-vi.mock("../../client/components/theme-tokens", () => ({
+vi.mock("../../client/components/theme-tokens", async (original) => ({
+  ...await original<object>(),
   useThemeTokens: () => ({
     fontUi: "system", fontMono: "monospace", foreground: "#111", foregroundMuted: "#666",
     typography: { block: { rowHeight: { compact: 22, desktop: 26 }, caption: { size: 11 } } },

@@ -5,14 +5,19 @@ const copy = vi.hoisted(() => vi.fn(async (_text: string, _options?: object) => 
 const list = React.createContext<{ getScrollMetrics(): { offset: number } } | null>(null);
 vi.mock("react-native", async () => ({ ...await import("./helpers/rn-mock"), VirtualizedList: { get contextType() { return list; } } }));
 vi.mock("../../client/ui/use-copy", () => ({ useCopy: () => ({ copy }) }));
-vi.mock("@getpaseo/plugin/client/react-native", async () => {
+vi.mock("@getpaseo/plugin/client/ui", async () => {
   const rn = await import("./helpers/rn-mock");
   return { Icon: (props: object) => React.createElement("Icon", props), ScrollView: rn.ScrollView,
-    Modal: rn.View, TextInput: rn.TextInput, useRevealedText: (text: string) => text };
+    Modal: Object.assign((props: Record<string, unknown>) => React.createElement(rn.View, props), {
+      Content: (props: { children?: React.ReactNode }) => React.createElement(rn.View, null, props.children),
+    }), TextInput: rn.TextInput };
 });
+const translate = vi.hoisted(() => vi.fn());
 vi.mock("@getpaseo/plugin/client", () => ({
   useSettings: () => ({ data: undefined }),
-  useRpc: () => async () => ({ dataUri: null, mime: null, width: null, height: null, bytes: null, error: "File not found" }),
+  usePaseo: () => null,
+  useRpc: (definition?: { name?: string }) => definition?.name === "translation.translate" ? translate
+    : async () => ({ dataUri: null, mime: null, width: null, height: null, bytes: null, error: "File not found" }),
 }));
 await import("./helpers/quiet-renderer");
 const { default: TestRenderer, act } = await import("react-test-renderer");
@@ -149,9 +154,59 @@ describe("iOS single Markdown block selection", () => {
     const root = renderer!.root.findAll((node) => String(node.type) === "View" && node.props.dataSet?.bcselection)[0]!;
     act(() => root.props.onTouchStart()); expect(menus()).toHaveLength(0);
   });
-  it.each(["web", "android"])("leaves %s selection unchanged", (platform) => {
-    os.__rnMockOS = platform; render("First.\n\nSecond.");
+  it("leaves web selection unchanged", () => {
+    os.__rnMockOS = "web"; render("First.\n\nSecond.");
     expect(frames()).toHaveLength(0); expect(menus()).toHaveLength(0);
+  });
+  it("selects one block on Android without taking native text selection or the responder", async () => {
+    os.__rnMockOS = "android"; render("First.\n\nSecond **bold**.");
+    const prose = (index: number) => frames()[index]!.findAll((node) => String(node.type) === "Text")[0]!;
+    // Observers only: no responder props, so a long press still starts native range selection.
+    for (const frame of frames()) {
+      expect(Object.keys(frame.props).filter((key) => /Responder/.test(key))).toEqual([]);
+    }
+    expect([prose(0).props.selectable, prose(1).props.selectable]).toEqual([true, true]);
+    tap(1, 100); tap(1, 230);
+    expect(highlights()).toHaveLength(1);
+    // The selected block drops a natively selected word; its neighbour keeps native selection.
+    expect([prose(0).props.selectable, prose(1).props.selectable]).toEqual([true, false]);
+    await act(async () => menus()[0]!.props.onPress());
+    expect(copy).toHaveBeenCalledExactlyOnceWith("Second bold.", { feedback: "toast" });
+    expect(highlights()).toHaveLength(0);
+    expect(prose(1).props.selectable).toBe(true);
+  });
+  it("keeps an open translation sheet when the list moves under it, and dismisses the menu before", async () => {
+    const { SelectionTranslationScope } = await import("../../client/translation/ui");
+    const { DEFAULT_TIMELINE_TRANSLATION_SETTINGS, publishTranslationSettings, resetTranslationSettingsStoreForTests } = await import("../../client/translation/settings-store");
+    const { resetTranslationStoreForTests } = await import("../../client/translation/store");
+    resetTranslationStoreForTests();
+    publishTranslationSettings({ ...DEFAULT_TIMELINE_TRANSLATION_SETTINGS, enabled: true, customModel: true, provider: "codex", model: "gpt-5" }, "scroll");
+    translate.mockResolvedValue({ state: "done", translation: "译文", targetLanguageCode: "zh-CN", provider: "codex", model: "gpt-5", thinkingMode: "custom", thinkingOptionId: null });
+    const scoped = (text: string) => React.createElement(list.Provider, { value: { getScrollMetrics: () => ({ offset }) } },
+      React.createElement(SelectionTranslationScope, { agentId: "agent-1", kind: "assistant_message", streaming: false,
+        children: React.createElement(MarkdownView, { text, tokens, variant: "document" }) }));
+    try {
+      act(() => { renderer = TestRenderer.create(scoped("Paragraph.")); });
+      const translateButton = () => renderer!.root.findAll((node) => String(node.type) === "Pressable" && node.props.accessibilityLabel === "Translate selected block");
+      // The menu alone still leaves when the list scrolls.
+      tap(0, 100); tap(0, 230);
+      expect(translateButton()).toHaveLength(1);
+      offset = 40; act(() => { vi.advanceTimersByTime(16); });
+      expect(highlights()).toHaveLength(0);
+
+      tap(0, 400); tap(0, 530);
+      await act(async () => translateButton()[0]!.props.onPress());
+      await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+      expect(JSON.stringify(renderer!.toJSON())).toContain("译文");
+      // A reply streaming below moves the list; the sheet over it stays.
+      offset = 120; act(() => { vi.advanceTimersByTime(48); });
+      expect(highlights()).toHaveLength(1);
+      expect(JSON.stringify(renderer!.toJSON())).toContain("译文");
+    } finally {
+      resetTranslationSettingsStoreForTests();
+      resetTranslationStoreForTests();
+      translate.mockReset();
+    }
   });
 });
 

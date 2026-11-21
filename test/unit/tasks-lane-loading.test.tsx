@@ -4,7 +4,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import "./helpers/quiet-renderer";
 
 vi.mock("react-native", () => import("./helpers/rn-mock"));
-vi.mock("@getpaseo/plugin/client/react-native", async () => {
+vi.mock("@getpaseo/plugin/client/ui", async () => {
   const rn = await import("./helpers/rn-mock");
   return {
     ...rn,
@@ -15,6 +15,7 @@ vi.mock("@getpaseo/plugin/client/react-native", async () => {
 });
 // Keep the real lanes, loading UI and data store; unrelated board chrome is outside this regression.
 vi.mock("../../client/tasks/board/filter-bar", async (importOriginal) => ({ ...await importOriginal<object>(), DesktopToolbar: () => null, DesktopFilterBar: () => null }));
+vi.mock("../../client/tasks/board/tablet-toolbar", () => ({ TabletToolbar: () => null }));
 vi.mock("../../client/tasks/board/details-sidebar", () => ({ DetailsSidebar: () => null }));
 vi.mock("../../client/tasks/cards/card-hints", () => ({ BoardTips: () => null, tipProps: () => ({}) }));
 

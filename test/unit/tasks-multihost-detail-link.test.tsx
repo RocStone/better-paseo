@@ -16,7 +16,7 @@ vi.mock("../../client/ui/use-input-capabilities", () => ({
 vi.mock("react-native", async () => ({ ...await import("./helpers/rn-mock"), UIManager: { hasViewManagerConfig: () => true } }));
 vi.mock("../../client/ui/use-copy", () => ({ useCopy: () => ({ copy }) }));
 vi.mock("@getpaseo/plugin/client", () => ({ useSettings: () => ({ data: undefined }), useRpc: () => reveal }));
-vi.mock("@getpaseo/plugin/client/react-native", async () => {
+vi.mock("@getpaseo/plugin/client/ui", async () => {
   const rn = await import("./helpers/rn-mock");
   return {
     Icon: (props: object) => React.createElement("Icon", props),
@@ -24,7 +24,6 @@ vi.mock("@getpaseo/plugin/client/react-native", async () => {
     Modal: rn.View,
     TextInput: rn.TextInput,
     copyText: async () => {},
-    useRevealedText: (text: string) => text,
     useToast: () => ({ show() {}, error() {} }),
   };
 });
@@ -90,7 +89,7 @@ async function pressLink(host: TaskHost) {
 describe("a file link in a card's details", () => {
   it("reveals the file for this host's card", async () => {
     await pressLink(LOCAL);
-    expect(reveal).toHaveBeenCalledWith({ cwd: "/work/app", path: "/work/app/notes/plan.md" });
+    expect(reveal).toHaveBeenCalledWith(expect.objectContaining({ cwd: "/work/app", path: "/work/app/notes/plan.md" }));
     expect(copy).not.toHaveBeenCalled();
   });
 

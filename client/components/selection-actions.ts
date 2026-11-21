@@ -1,12 +1,33 @@
 import { useEffect } from "react";
 import { Platform } from "react-native";
 import type { TextProps, ViewProps } from "react-native";
-import { copyText } from "@getpaseo/plugin/client/react-native";
+import { copyText } from "@getpaseo/plugin/client/ui";
 import { radiusV2 } from "./theme-tokens";
 import type { ExtendedThemeTokens } from "./theme-tokens";
-import { FLOAT, FLOAT_EASE, floatHover, floatPressed, floatShadow } from "../ui/tokens/float";
+import { FLOAT, FLOAT_EASE, floatHover, floatPressed } from "../ui/tokens/float";
+import { CARD_RADIUS, CARD_SHADOW } from "../ui/tokens/card";
 import { getEnhancerPreferences } from "../preferences";
 import { toolbarLabel } from "../i18n/toolbar-strings";
+import { resolveLanguage } from "../i18n/settings-strings";
+import { translationSettingsSync } from "../translation/settings-store";
+import { translationAgentConfigStoreFor } from "../translation/store";
+import {
+  SELECTION_SCOPE_ATTRIBUTES,
+  createSelectionTranslation,
+  selectionScopeForElement,
+  watchSelectionScopeElements,
+  selectionViewMessage,
+  selectionViewRetryable,
+  selectionViewText,
+  type SelectionTranslation,
+  type SelectionTranslationScopeValue,
+  type SelectionTranslationView,
+} from "../translation/selection";
+import { selectionViewTitle } from "../translation/view-text";
+import { openTranslationSettings } from "../translation/navigation";
+import { markId, normalizeProvider } from "./provider-logo";
+import { MONO_MARKS, readMark, requestMark, subscribeMarks } from "./marks";
+import { SYNCED_LOADER_FRAMES } from "../ui/synced-loader";
 
 /**
  * A floating Copy / Add to chat bar for highlighted callout text.
@@ -25,8 +46,14 @@ import { toolbarLabel } from "../i18n/toolbar-strings";
  * `all: initial` on the shadow host stops inheritance at the boundary, and the
  * bar's own rules are the only ones inside it.
  *
+ * In a reply or a thought the bar also offers Translate, for exactly the
+ * selected text. Its result opens in a panel under the buttons, bounded to the
+ * viewport. It stays open if the source scrolls or is replaced; a new
+ * selection never shows the previous one's result.
+ *
  * Web only. iOS and Android route selection through the platform's own menu,
- * which a plugin cannot extend; `selectable` text there already offers Copy.
+ * which a plugin cannot extend; `selectable` text there already offers Copy,
+ * and a double-tapped block has its own menu (`block-selection.tsx`).
  */
 
 /** Marks a callout root as a surface whose selections get the bar. */
@@ -50,14 +77,31 @@ export const selectionCodeSurface = { dataSet: { bccode: true, pmono: "" } } as 
  */
 export const selectionCodeText = { dataSet: { bccode: true, pmono: "" } } as unknown as TextProps;
 
+export const selectionWithoutComposer = { dataSet: { bcnocomposer: "" } } as unknown as ViewProps;
+
 const SURFACE_SELECTOR = "[data-bcselection]";
 /** The bar's host, for layers that must treat a press on it as their own. */
 export const SELECTION_BAR_SELECTOR = "[data-bcselectionbar]";
 const CODE_SELECTOR = "[data-bccode]";
 /** The host composer input carries `dataSet={{ composerInput: "" }}`. */
 const COMPOSER_SELECTOR = "[data-composer-input]";
+/** A translatable surface carries its conversation (`selectionScopeDataSet`). */
+const SCOPE_SELECTOR = `[data-${SELECTION_SCOPE_ATTRIBUTES.agent}]`;
+/** The widest the translation panel grows, and its body's tallest. */
+const PANEL_WIDTH = 420;
+const PANEL_BODY_MAX = 360;
+const PANEL_BODY_MIN = 48;
+/** How long Copy translation shows its check. */
+const COPIED_MS = 1200;
 
 const GAP = 8;
+/**
+ * How long after a wheel, touch move, or scrolling key a scroll still counts
+ * as the reader's own. Any later scroll is the page moving by itself.
+ */
+const USER_SCROLL_MS = 400;
+/** Keys that scroll the page when focus is not in a field. */
+const SCROLL_KEYS = new Set(["PageUp", "PageDown", "Home", "End", "ArrowUp", "ArrowDown", " "]);
 /** How long a pressed button shows its check before the bar steps aside. */
 const DONE_MS = 700;
 /** The bar's fade out, after which it leaves the page. */
@@ -67,16 +111,38 @@ const LEAVE_MS = 100;
 const ICONS = {
   copy: '<rect width="14" height="14" x="8" y="8" rx="2" ry="2"/><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/>',
   check: '<path d="M20 6 9 17l-5-5"/>',
+  retry: '<path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"/><path d="M8 16H3v5"/>',
   add: '<path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/><path d="M12 7v6"/><path d="M9 10h6"/>',
+  settings: '<path d="M9.671 4.136a2.34 2.34 0 0 1 4.659 0 2.34 2.34 0 0 0 3.319 1.915 2.34 2.34 0 0 1 2.33 4.033 2.34 2.34 0 0 0 0 3.831 2.34 2.34 0 0 1-2.33 4.033 2.34 2.34 0 0 0-3.319 1.915 2.34 2.34 0 0 1-4.659 0 2.34 2.34 0 0 0-3.32-1.915 2.34 2.34 0 0 1-2.33-4.033 2.34 2.34 0 0 0 0-3.831A2.34 2.34 0 0 1 6.35 6.051a2.34 2.34 0 0 0 3.319-1.915"/><circle cx="12" cy="12" r="3"/>',
+  original: '<path d="M6 2h8l5 5v14H5V2zM14 2v6h5M9 12h6M9 16h6"/>',
+  translate: '<path d="m5 8 6 6"/><path d="m4 14 6-6 2-3"/><path d="M2 5h12"/><path d="M7 2h1"/><path d="m22 22-5-10-5 10"/><path d="M14 18h6"/>',
 } as const;
 type IconName = keyof typeof ICONS;
 
 interface Snapshot {
   text: string;
   isCode: boolean;
-  rect: DOMRect;
+  canAddToChat: boolean;
+  /** Nonempty line boxes of the selection, in range order. */
+  rects: readonly DOMRect[];
   /** The element the selection sits in, to find its own chat's composer. */
   element: Element | null;
+  /** The plugin surface holding both ends of the selection. */
+  surface: Element;
+  /** The reply or thought it belongs to; null where Translate is not offered. */
+  scope: SelectionTranslationScopeValue | null;
+}
+
+/** The scope bound to the Markdown root holding the surface; attributes alone never route a request. */
+function scopeOf(surface: Element): SelectionTranslationScopeValue | null {
+  const marked = surface.closest(SCOPE_SELECTOR);
+  return marked ? selectionScopeForElement(marked) : null;
+}
+
+/** The same text in the same surface of the same conversation. */
+function sameSelection(a: Snapshot, b: Snapshot): boolean {
+  return a.text === b.text && a.surface === b.surface &&
+    a.scope?.agentId === b.scope?.agentId && a.scope?.kind === b.scope?.kind;
 }
 
 function elementOf(node: Node | null): HTMLElement | null {
@@ -86,28 +152,46 @@ function elementOf(node: Node | null): HTMLElement | null {
 
 /**
  * The live selection, or null when it is empty, collapsed, or outside every
- * plugin surface. Both ends must sit in the same surface: a drag that runs from
- * a callout into host chrome is not a callout selection.
+ * plugin surface. Both ends must belong to one surface, except for an empty
+ * boundary beyond it. A drag into host text is not a callout selection.
  */
 function readSelection(): Snapshot | null {
   const selection = window.getSelection();
   if (!selection || selection.isCollapsed || selection.rangeCount === 0) return null;
 
-  const text = selection.toString().trim();
-  if (!text) return null;
-
   const anchor = elementOf(selection.anchorNode)?.closest(SURFACE_SELECTOR);
   const focus = elementOf(selection.focusNode)?.closest(SURFACE_SELECTOR);
-  if (!anchor || anchor !== focus) return null;
+  if ((!anchor && !focus) || (anchor && focus && anchor !== focus)) return null;
+  const surface = (anchor ?? focus)!;
 
-  const range = selection.getRangeAt(0);
-  const rects = range.getClientRects();
-  const rect = rects.length > 0 ? rects[0] : range.getBoundingClientRect();
-  if (!rect || (rect.width === 0 && rect.height === 0)) return null;
+  let range = selection.getRangeAt(0);
+  const text = selection.toString().trim();
+  if (!text) return null;
+  if (!anchor || !focus) {
+    // A browser's whole-line selection can end at the next element's start.
+    // Accept that boundary only when no text outside the surface was selected.
+    // Compare Range text with Range text: `Selection.toString()` puts line
+    // breaks between blocks and `Range.toString()` does not.
+    const startsInside = surface.contains(range.startContainer);
+    const outside = range.cloneRange();
+    if (startsInside) outside.setStartAfter(surface);
+    else outside.setEndBefore(surface);
+    if (outside.toString().trim()) return null;
+    const bounded = range.cloneRange();
+    if (startsInside) bounded.setEndAfter(surface);
+    else bounded.setStartBefore(surface);
+    range = bounded;
+  }
 
-  const element = elementOf(range.commonAncestorContainer);
+  const lines = range.getClientRects();
+  const rects = (lines.length > 0 ? Array.from(lines) : [range.getBoundingClientRect()])
+    .filter((rect) => rect.width > 0 && rect.height > 0);
+  if (rects.length === 0) return null;
+
+  const element = elementOf(anchor && focus ? range.commonAncestorContainer : anchor ? selection.anchorNode : selection.focusNode);
   const isCode = Boolean(element?.closest(CODE_SELECTOR));
-  return { text, isCode, rect, element };
+  const canAddToChat = !surface.closest("[data-bcnocomposer]");
+  return { text, isCode, canAddToChat, rects, element, surface, scope: scopeOf(surface) };
 }
 
 /** Markdown the composer can carry: a fence for code, a blockquote for prose. */
@@ -192,18 +276,18 @@ export function insertIntoComposer(snippet: string, from: Element | null): boole
   return true;
 }
 
-// The floating controls' family (float.ts): a rounded frame 30 tall lifted by
-// a shadow, with toolbar-sized items, muted icons and a success check.
+// The floating controls' sizing and motion, with the task card's corners and shadow.
 const BAR_CSS = `
 :host { all: initial; }
 .bar {
   display: flex;
-  align-items: center;
-  gap: ${FLOAT.inset}px;
+  flex-direction: column;
+  align-items: stretch;
+  box-sizing: border-box;
   padding: ${FLOAT.inset}px;
   border-style: solid;
   border-width: 1px;
-  border-radius: ${FLOAT.radius}px;
+  border-radius: ${CARD_RADIUS}px;
   box-shadow: var(--bc-bar-shadow);
   background-color: var(--bc-bar-bg);
   font-size: 12px;
@@ -212,8 +296,110 @@ const BAR_CSS = `
   -webkit-user-select: none;
   opacity: 0;
   transform: translateY(var(--bc-bar-from, 4px));
-  transition: opacity 140ms ${FLOAT_EASE.out}, transform 140ms ${FLOAT_EASE.out};
+  transition: opacity 140ms ${FLOAT_EASE.out}, transform 140ms ${FLOAT_EASE.out}, box-shadow 140ms ${FLOAT_EASE.out};
 }
+@media (hover: hover) { .bar:hover { box-shadow: var(--bc-bar-shadow-hover); } }
+.row {
+  display: flex;
+  align-items: center;
+  gap: ${FLOAT.inset}px;
+}
+.row-separator { width: 0.5px; height: 16px; flex: 0 0 auto; background-color: var(--bc-bar-border); }
+.bar.standalone .selection-action { display: none; }
+.drag-handle { display: none; flex: 1 1 auto; min-width: 24px; align-self: stretch; cursor: move; align-items: center; padding-left: 8px; color: var(--bc-bar-text); font-size: 13px; font-weight: 600; }
+.bar.translating .drag-handle { display: flex; }
+.resize-handle { display: none; position: absolute; right: 0; bottom: 0; width: 16px; height: 16px; cursor: nwse-resize; touch-action: none; }
+.resize-handle::after { content: ""; position: absolute; right: 4px; bottom: 4px; width: 6px; height: 6px; border-right: 1px solid var(--bc-bar-icon); border-bottom: 1px solid var(--bc-bar-icon); opacity: 0.6; }
+.bar.translating .resize-handle { display: block; }
+.resize-edge { display: none; position: absolute; touch-action: none; }
+.bar.translating .resize-edge { display: block; }
+.resize-left, .resize-right { top: 8px; bottom: 16px; width: 8px; cursor: ew-resize; }
+.resize-left { left: 0; }
+.resize-right { right: 0; }
+.resize-bottom { left: 8px; right: 16px; bottom: 0; height: 8px; cursor: ns-resize; }
+.bar.translating { width: var(--bc-panel-width); }
+.panel {
+  display: none;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: ${FLOAT.inset}px;
+  padding: 8px 8px 4px;
+  border-top: 0.5px solid var(--bc-bar-border);
+}
+.bar.translating .panel { display: flex; }
+.panel-head {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+  color: var(--bc-bar-subtle);
+  font-weight: 500;
+  min-height: 20px;
+  font-size: 11px;
+  line-height: 14px;
+}
+.panel-head svg {
+  width: 11px;
+  height: 11px;
+  flex: 0 0 auto;
+  fill: none;
+  color: inherit;
+  stroke: currentColor;
+  stroke-width: 1.75;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.panel-title { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.row .panel-toggle { padding: 0; width: 28px; height: 28px; justify-content: center; }
+.row .panel-toggle span { display: none; }
+.panel-heading { display: none; align-items: center; gap: 6px; height: 32px; padding: 0 8px; font-weight: 500; }
+.panel-heading svg { width: 16px; height: 16px; fill: none; stroke: var(--bc-bar-icon); stroke-width: 1.75; stroke-linecap: round; stroke-linejoin: round; }
+.bar.translating .panel-heading { display: flex; }
+.bar.translating .translate-action { display: none; }
+.row .panel-settings { margin-left: auto; padding: 0; width: 28px; height: 28px; justify-content: center; }
+.panel-model { display: flex; align-items: center; gap: 5px; min-width: 0; }
+.panel-model img, .panel-model .model-mark { width: 11px; height: 11px; flex: 0 0 auto; }
+.panel-model span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.activity-grid { display: grid; grid-template-columns: repeat(2, ${10 / 3}px); grid-template-rows: repeat(3, ${10 / 3}px); gap: 2px; width: ${26 / 3}px; height: 14px; flex: 0 0 auto; }
+.activity-dot { width: ${10 / 3}px; height: ${10 / 3}px; border-radius: 50%; background: var(--bc-bar-text); animation-duration: 950ms; animation-timing-function: steps(1, end); animation-iteration-count: infinite; animation-delay: var(--bc-loader-phase); }
+${SYNCED_LOADER_FRAMES[0].map((opacity, index) => `.activity-dot:nth-child(${index + 1}) { opacity: ${opacity}; animation-name: bc-dot-${index}; } @keyframes bc-dot-${index} { ${SYNCED_LOADER_FRAMES.map((frame, step) => `${step * 100 / 6}% { opacity: ${frame[index]}; }`).join(" ")} 100% { opacity: ${opacity}; } }`).join("\n")}
+.panel-message { display: flex; align-items: center; gap: 6px; color: var(--bc-bar-icon); white-space: pre-wrap; overflow-wrap: anywhere; }
+.panel-message span:last-child { min-width: 0; }
+.panel-message[data-tone="error"] { color: var(--bc-bar-danger); }
+.panel-body {
+  position: relative;
+  z-index: 1;
+  color: var(--bc-bar-text);
+  user-select: text;
+  -webkit-user-select: text;
+  font-size: 13px;
+  line-height: 19px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  overflow: auto;
+  height: var(--bc-panel-height, auto);
+  overscroll-behavior: contain;
+  margin-right: -8px;
+  padding-right: 10px;
+  scrollbar-width: auto;
+  scrollbar-color: auto;
+  max-height: var(--bc-panel-max, ${PANEL_BODY_MAX}px);
+}
+.panel-body::-webkit-scrollbar { width: 4px; height: 4px; }
+.panel-body::-webkit-scrollbar-track { background: transparent; }
+.panel-body::-webkit-scrollbar-thumb { border-radius: 2px; background: color-mix(in srgb, var(--bc-bar-subtle) 40%, transparent); }
+.panel-actions { display: flex; justify-content: flex-end; gap: ${FLOAT.inset}px; }
+.panel-actions .btn { position: relative; width: 28px; height: 28px; padding: 0; justify-content: center; }
+.panel-actions .btn span { display: none; }
+.panel-actions .btn::after {
+  content: attr(data-tip); position: absolute; bottom: calc(100% + 4px); right: 0; z-index: 1;
+  padding: 4px 6px; border: 0.5px solid var(--bc-bar-border); border-radius: 4px;
+  background: var(--bc-bar-bg); color: var(--bc-bar-text); box-shadow: var(--bc-bar-shadow);
+  font-size: 11.5px; line-height: 16px; white-space: nowrap; pointer-events: none;
+  visibility: hidden; opacity: 0;
+}
+.panel-actions .btn:hover::after, .panel-actions .btn:focus-visible::after { visibility: visible; opacity: 1; }
+.panel [hidden], .row [hidden] { display: none; }
 .bar.shown { opacity: 1; transform: none; }
 .bar.leaving {
   opacity: 0;
@@ -240,6 +426,7 @@ const BAR_CSS = `
   flex: 0 0 auto;
   transition: background-color 100ms ${FLOAT_EASE.out};
 }
+.row .btn { border-radius: ${CARD_RADIUS - FLOAT.inset - 1}px; }
 .btn:hover { background-color: var(--bc-bar-hover); }
 .btn:active { background-color: var(--bc-bar-pressed); }
 .btn:focus { outline: none; }
@@ -259,6 +446,7 @@ const BAR_CSS = `
 .btn[data-done] svg { color: var(--bc-bar-done); }
 @media (prefers-reduced-motion: reduce) {
   .bar, .bar.leaving, .btn { transition: none; }
+  .activity-dot { animation: none; }
 }
 `;
 
@@ -267,11 +455,28 @@ interface Bar {
   setTheme(tokens: ExtendedThemeTokens): void;
   show(rect: DOMRect): void;
   hide(): void;
+  setSelectionActions(canAddToChat: boolean, canTranslate: boolean): void;
+  /** The translation panel's content; null closes it. */
+  setPanel(view: SelectionTranslationView | null): void;
+  pin(): void;
+  reposition(): void;
   dispose(): void;
 }
 
-/** `done` runs once a press has shown its result: the bar steps aside. */
-function createBar(done: () => void): Bar {
+interface BarActions {
+  /** A press has shown its result: the bar steps aside. */
+  done(): void;
+  translate(): void;
+  retry(): void;
+  settings(): void;
+  snapshot(): Snapshot | null;
+}
+
+function readLanguage() {
+  return getEnhancerPreferences().language;
+}
+
+function createBar(actions: BarActions, standalone = false, original = ""): Bar {
   const host = document.createElement("div");
   host.setAttribute("data-bcselectionbar", "");
   // Host-app rules can match a bare `div`, so the placement properties are set
@@ -307,10 +512,27 @@ function createBar(done: () => void): Bar {
 
   const bar = document.createElement("div");
   bar.className = "bar";
+  if (standalone) bar.classList.add("standalone");
   shadow.appendChild(bar);
+  const row = document.createElement("div");
+  row.className = "row";
+  bar.appendChild(row);
+  const panel = document.createElement("div");
+  panel.className = "panel";
+  bar.appendChild(panel);
 
   let doneTimer = 0;
   let leaveTimer = 0;
+  let copiedTimer = 0;
+  /** The selection the bar sits by, to place it again when the panel changes. */
+  let anchor: DOMRect | null = null;
+  let view: SelectionTranslationView | null = null;
+  let canAddToChat = true;
+  let canTranslate = standalone;
+  let geometry: { left: number; top: number; width: number; bodyHeight: number } | null = null;
+  let endGesture: (() => void) | null = null;
+  let resized = false;
+  let showingOriginal = false;
 
   /**
    * An icon and a label in the settings page's language, read on every paint
@@ -319,13 +541,19 @@ function createBar(done: () => void): Bar {
    */
   const paint = (button: HTMLButtonElement, label: string, icon: IconName) => {
     const text = document.createElement("span");
-    text.textContent = toolbarLabel(label, getEnhancerPreferences().language);
+    text.textContent = toolbarLabel(label, readLanguage());
+    button.dataset.tip = text.textContent;
     button.innerHTML = `<svg viewBox="0 0 24 24" aria-hidden="true">${ICONS[icon]}</svg>`;
     button.toggleAttribute("data-done", icon === "check");
     button.appendChild(text);
   };
 
-  const makeButton = (label: string, icon: IconName, onPress: (button: HTMLButtonElement) => void) => {
+  const makeButton = (
+    parent: HTMLElement,
+    label: string,
+    icon: IconName,
+    onPress: (button: HTMLButtonElement) => void,
+  ) => {
     const button = document.createElement("button");
     button.type = "button";
     button.className = "btn";
@@ -334,12 +562,12 @@ function createBar(done: () => void): Bar {
     button.dataset.icon = icon;
     paint(button, label, icon);
     button.addEventListener("click", () => onPress(button));
-    bar.appendChild(button);
+    parent.appendChild(button);
     return button;
   };
 
   const reset = () => {
-    for (const button of [copyButton, addButton]) {
+    for (const button of [copyButton, addButton, translateButton]) {
       paint(button, button.dataset.label ?? "", button.dataset.icon as IconName);
     }
   };
@@ -349,19 +577,26 @@ function createBar(done: () => void): Bar {
   const flash = (button: HTMLButtonElement, label: string) => {
     paint(button, label, "check");
     window.clearTimeout(doneTimer);
-    doneTimer = window.setTimeout(done, DONE_MS);
+    doneTimer = window.setTimeout(actions.done, DONE_MS);
   };
 
-  const copyButton = makeButton("Copy", "copy", (button) => {
-    const snapshot = readSelection();
+  const copyButton = makeButton(row, "Copy", "copy", (button) => {
+    const snapshot = actions.snapshot();
     if (!snapshot) return;
     void copyText(snapshot.text);
     flash(button, "Copied");
   });
+  copyButton.classList.add("selection-action");
 
-  const addButton = makeButton("Add to chat", "add", (button) => {
-    const snapshot = readSelection();
-    if (!snapshot) return;
+  const copySeparator = document.createElement("div");
+  copySeparator.className = "row-separator";
+  copySeparator.classList.add("selection-action");
+  copySeparator.setAttribute("aria-hidden", "true");
+  row.appendChild(copySeparator);
+
+  const addButton = makeButton(row, "Add to chat", "add", (button) => {
+    const snapshot = actions.snapshot();
+    if (!snapshot?.canAddToChat) return;
     if (insertIntoComposer(quote(snapshot), snapshot.element)) {
       flash(button, "Added");
       return;
@@ -371,13 +606,234 @@ function createBar(done: () => void): Bar {
     void copyText(snapshot.text);
     flash(button, "Copied instead");
   });
+  addButton.classList.add("selection-action");
+
+  const separator = document.createElement("div");
+  separator.className = "row-separator";
+  separator.classList.add("selection-action");
+  separator.setAttribute("aria-hidden", "true");
+  separator.hidden = true;
+  row.appendChild(separator);
+  const translateButton = makeButton(row, "Translate", "translate", () => actions.translate());
+  translateButton.classList.add("translate-action");
+  if (!standalone) translateButton.classList.add("selection-action");
+  translateButton.hidden = !standalone;
+  const heading = document.createElement("div");
+  heading.className = "panel-heading";
+  heading.innerHTML = `<svg viewBox="0 0 24 24" aria-hidden="true">${ICONS.translate}</svg>`;
+  const headingText = document.createElement("span");
+  headingText.textContent = toolbarLabel("Translate", readLanguage());
+  heading.appendChild(headingText);
+  row.appendChild(heading);
+  const dragHandle = document.createElement("div");
+  dragHandle.className = "drag-handle";
+  row.appendChild(dragHandle);
+  const toggleButton = makeButton(row, "Show original", "original", () => {
+    showingOriginal = !showingOriginal;
+    renderPanel();
+  });
+  toggleButton.classList.add("panel-toggle");
+  toggleButton.hidden = true;
+  const settingsButton = makeButton(row, "Translation settings", "settings", () => actions.settings());
+  settingsButton.className += " panel-settings";
+  settingsButton.innerHTML = `<svg viewBox="0 0 24 24" aria-hidden="true">${ICONS.settings}</svg>`;
+  settingsButton.hidden = true;
+  const resizeHandle = document.createElement("div");
+  resizeHandle.className = "resize-handle";
+  resizeHandle.setAttribute("aria-hidden", "true");
+  bar.appendChild(resizeHandle);
+
+  const beginGesture = (event: PointerEvent, direction: "move" | "left" | "right" | "bottom" | "corner") => {
+    if (!view || event.button !== 0) return;
+    event.preventDefault();
+    const body = panel.querySelector<HTMLElement>(".panel-body");
+    const start = { x: event.clientX, y: event.clientY,
+      left: parseFloat(host.style.getPropertyValue("left")), top: parseFloat(host.style.getPropertyValue("top")),
+      width: bar.offsetWidth, bodyHeight: body?.offsetHeight ?? PANEL_BODY_MAX };
+    const move = (next: PointerEvent) => {
+      const dx = next.clientX - start.x;
+      const dy = next.clientY - start.y;
+      const horizontal = direction === "left" || direction === "right" || direction === "corner";
+      const vertical = direction === "bottom" || direction === "corner";
+      const width = direction === "left"
+        ? Math.min(Math.max(360, start.width - dx), start.left + start.width - GAP)
+        : horizontal ? Math.min(Math.max(360, start.width + dx), window.innerWidth - start.left - GAP) : start.width;
+      const bodyHeight = vertical ? Math.min(Math.max(PANEL_BODY_MIN, start.bodyHeight + dy), window.innerHeight - start.top - GAP - (bar.offsetHeight - (body?.offsetHeight ?? 0))) : start.bodyHeight;
+      geometry = { left: direction === "left" ? start.left + start.width - width : direction === "move" ? Math.max(GAP, Math.min(start.left + dx, window.innerWidth - bar.offsetWidth - GAP)) : start.left,
+        top: direction === "move" ? Math.max(GAP, Math.min(start.top + dy, window.innerHeight - bar.offsetHeight - GAP)) : start.top, width, bodyHeight };
+      host.style.setProperty("left", `${Math.round(geometry.left)}px`, "important");
+      host.style.setProperty("top", `${Math.round(geometry.top)}px`, "important");
+      bar.style.setProperty("--bc-panel-width", `${Math.round(width)}px`);
+      if (vertical) {
+        resized = true;
+        bar.style.setProperty("--bc-panel-height", `${Math.round(bodyHeight)}px`);
+        bar.style.setProperty("--bc-panel-max", `${Math.round(bodyHeight)}px`);
+      }
+    };
+    const end = () => { window.removeEventListener("pointermove", move); window.removeEventListener("pointerup", end); window.removeEventListener("pointercancel", end); endGesture = null; };
+    endGesture?.();
+    endGesture = end;
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", end);
+    window.addEventListener("pointercancel", end);
+  };
+  dragHandle.addEventListener("pointerdown", (event) => beginGesture(event, "move"));
+  resizeHandle.addEventListener("pointerdown", (event) => beginGesture(event, "corner"));
+  for (const direction of ["left", "right", "bottom"] as const) {
+    const edge = document.createElement("div");
+    edge.className = `resize-edge resize-${direction}`;
+    edge.setAttribute("aria-hidden", "true");
+    edge.addEventListener("pointerdown", (event) => beginGesture(event, direction));
+    bar.appendChild(edge);
+  }
 
   // The bar keeps the selection alive: a press inside it must not move the
   // caret, or `window.getSelection()` is empty by the time the click lands.
-  const holdSelection = (event: MouseEvent) => event.preventDefault();
+  const holdSelection = (event: MouseEvent) => {
+    if (panel.querySelector(".panel-body")?.contains(event.target as Node)) return;
+    event.preventDefault();
+  };
   bar.addEventListener("mousedown", holdSelection);
 
   document.body.appendChild(host);
+
+  const element = <K extends keyof HTMLElementTagNameMap>(tag: K, className: string, text?: string) => {
+    const node = document.createElement(tag);
+    node.className = className;
+    // Text only: a translation is model output and never becomes markup.
+    if (text !== undefined) node.textContent = text;
+    return node;
+  };
+
+  /** Rebuilds the panel for `view`; the translation goes in as text, never as HTML. */
+  const renderPanel = () => {
+    panel.replaceChildren();
+    if (!view) return;
+    const language = readLanguage();
+    headingText.textContent = toolbarLabel("Translate", language);
+    // A mark can redraw the panel during its fade, after the selection is gone.
+    const source = standalone ? original : actions.snapshot()?.text;
+    const originalVisible = showingOriginal && view.status === "done" && source !== undefined;
+    const toggleLabel = originalVisible ? "Show translation" : "Show original";
+    toggleButton.hidden = view.status !== "done" || source === undefined;
+    toggleButton.setAttribute("aria-label", toggleLabel);
+    toggleButton.title = toolbarLabel(toggleLabel, language);
+    paint(toggleButton, toggleLabel, originalVisible ? "translate" : "original");
+    const lang = resolveLanguage(language ?? "system");
+    const head = element("div", "panel-head");
+    head.innerHTML = `<svg viewBox="0 0 24 24" aria-hidden="true">${ICONS.translate}</svg>`;
+    head.appendChild(element("span", "panel-title", selectionViewTitle(view, lang)));
+    if (view.modelInfo) {
+      const model = element("div", "panel-model");
+      const id = markId(normalizeProvider(view.modelInfo.provider));
+      const uri = readMark(id);
+      if (id && uri === undefined) requestMark(id);
+      if (uri) {
+        if (id && MONO_MARKS.has(id)) {
+          const mark = element("div", "model-mark");
+          mark.style.backgroundColor = "var(--bc-bar-subtle)";
+          mark.style.mask = `url("${uri}") center / contain no-repeat`;
+          model.appendChild(mark);
+        } else {
+          const image = element("img", "model-mark");
+          image.src = uri;
+          image.alt = "";
+          model.appendChild(image);
+        }
+      }
+      model.appendChild(element("span", "model-label", view.modelInfo.model));
+      head.appendChild(model);
+    }
+    panel.appendChild(head);
+
+    const text = originalVisible ? source : selectionViewText(view);
+    const message = text ? null : selectionViewMessage(view);
+    if (message) {
+      const line = element("div", "panel-message");
+      if (view.status === "running" || view.status === "config-loading" || view.status === "settings-loading") {
+        const grid = element("span", "activity-grid");
+        grid.setAttribute("aria-hidden", "true");
+        grid.style.setProperty("--bc-loader-phase", `${-(Date.now() % 950)}ms`);
+        for (let index = 0; index < 6; index += 1) grid.appendChild(element("span", "activity-dot"));
+        line.appendChild(grid);
+      }
+      line.appendChild(element("span", "", toolbarLabel(message, language) + (view.status === "error" ? `: ${view.error}` : "")));
+      line.setAttribute("role", view.status === "error" ? "alert" : "status");
+      if (view.status === "error") line.dataset.tone = "error";
+      panel.appendChild(line);
+    }
+    if (text) panel.appendChild(element("div", "panel-body", text));
+
+    const done = view.status === "done" ? view.result.translation : null;
+    if (done !== null || selectionViewRetryable(view)) {
+      const buttons = element("div", "panel-actions");
+      if (done !== null) {
+        const copyLabel = originalVisible ? "Copy original" : "Copy translation";
+        makeButton(buttons, copyLabel, "copy", (button) => {
+          void copyText(text!);
+          paint(button, "Copied", "check");
+          window.clearTimeout(copiedTimer);
+          copiedTimer = window.setTimeout(() => paint(button, copyLabel, "copy"), COPIED_MS);
+        });
+      }
+      if (selectionViewRetryable(view)) {
+        const retry = makeButton(buttons, "Retry", "retry", () => actions.retry());
+        retry.dataset.action = "retry";
+      }
+      panel.appendChild(buttons);
+    }
+  };
+
+  const place = (rect: DOMRect, arriving: boolean) => {
+    const translating = view !== null;
+    if (translating) bar.classList.add("translating");
+    else bar.classList.remove("translating");
+    if (translating) {
+      bar.style.setProperty("--bc-panel-width", `${Math.max(0, Math.min(geometry?.width ?? PANEL_WIDTH, window.innerWidth - GAP * 2))}px`);
+      const body = panel.querySelector<HTMLElement>(".panel-body");
+      if (body) {
+        // The body scrolls inside whatever height the viewport leaves.
+        bar.style.setProperty("--bc-panel-max", `${PANEL_BODY_MAX}px`);
+        const chrome = bar.offsetHeight - body.offsetHeight;
+        const room = window.innerHeight - GAP * 2 - chrome;
+        bar.style.setProperty("--bc-panel-max", `${Math.round(Math.max(PANEL_BODY_MIN, Math.min(resized ? geometry!.bodyHeight : PANEL_BODY_MAX, room)))}px`);
+      }
+    }
+    // Measure once visible, then clamp inside the viewport. Above the
+    // selection by default: below it covers the next line of output.
+    const width = bar.offsetWidth;
+    const height = bar.offsetHeight;
+    const left = Math.min(
+      Math.max(GAP, rect.left + rect.width / 2 - width / 2),
+      Math.max(GAP, window.innerWidth - width - GAP),
+    );
+    const above = rect.top - height - GAP;
+    const top = above >= GAP
+      ? above
+      : Math.max(GAP, Math.min(rect.bottom + GAP, window.innerHeight - height - GAP));
+    host.style.setProperty("left", `${Math.round(geometry ? Math.max(GAP, Math.min(geometry.left, window.innerWidth - width - GAP)) : left)}px`, "important");
+    host.style.setProperty("top", `${Math.round(geometry ? Math.max(GAP, Math.min(geometry.top, window.innerHeight - height - GAP)) : top)}px`, "important");
+    // A bar already up moves with its selection at once; a new one rises 4
+    // from the selection's side and fades in, and leaves 2 the other way.
+    if (!arriving) return;
+    const below = above < GAP;
+    bar.style.setProperty("--bc-bar-from", below ? "-4px" : "4px");
+    bar.style.setProperty("--bc-bar-to", below ? "-2px" : "2px");
+    bar.classList.remove("leaving", "shown");
+    void bar.offsetWidth;
+    bar.classList.add("shown");
+  };
+
+  const updateSelectionActions = () => {
+    copyButton.hidden = Boolean(view);
+    copySeparator.hidden = Boolean(view) || !canAddToChat;
+    addButton.hidden = copySeparator.hidden;
+    translateButton.hidden = !canTranslate;
+    separator.hidden = Boolean(view) || !canTranslate;
+  };
+
+  const hidden = () => host.style.getPropertyValue("display") === "none";
+  const unsubscribeMarks = subscribeMarks(() => { if (view?.modelInfo) renderPanel(); });
 
   return {
     host,
@@ -385,13 +841,18 @@ function createBar(done: () => void): Bar {
       // The bar floats over text, so it needs the theme's one opaque surface;
       // the derived surfaces are translucent by design.
       host.style.setProperty("--bc-bar-bg", tokens.surface0);
-      host.style.setProperty("--bc-bar-shadow", floatShadow(tokens));
+      host.style.setProperty("--bc-bar-shadow", CARD_SHADOW[tokens.isDark ? "dark" : "light"].rest);
+      host.style.setProperty("--bc-bar-shadow-hover", CARD_SHADOW[tokens.isDark ? "dark" : "light"].hover);
       host.style.setProperty("--bc-bar-text", tokens.foreground);
       host.style.setProperty("--bc-bar-icon", tokens.foregroundMuted);
+      host.style.setProperty("--bc-bar-subtle", tokens.foregroundSubtle);
       host.style.setProperty("--bc-bar-done", tokens.success);
       host.style.setProperty("--bc-bar-hover", floatHover(tokens));
       host.style.setProperty("--bc-bar-pressed", floatPressed(tokens));
       host.style.setProperty("--bc-bar-ring", tokens.accent);
+      host.style.setProperty("--bc-bar-accent", tokens.accent);
+      host.style.setProperty("--bc-bar-border", tokens.v2.border);
+      host.style.setProperty("--bc-bar-danger", tokens.danger);
       bar.style.borderColor = tokens.v2.border;
       // The bar sits on document.body, outside the host's UI font rule, so
       // "Follow Paseo" reads the host's own font variable directly.
@@ -399,38 +860,19 @@ function createBar(done: () => void): Bar {
     },
     show(rect) {
       window.clearTimeout(leaveTimer);
-      const arriving = host.style.getPropertyValue("display") === "none" || bar.classList.contains("leaving");
-      if (host.style.getPropertyValue("display") === "none") {
+      const arriving = hidden() || bar.classList.contains("leaving");
+      if (hidden()) {
         window.clearTimeout(doneTimer);
         reset();
       }
       host.style.setProperty("display", "block", "important");
       if (topLayer && !host.matches(":popover-open")) host.showPopover();
-      // Measure once visible, then clamp inside the viewport. Above the
-      // selection by default: below it covers the next line of output.
-      const width = bar.offsetWidth;
-      const height = bar.offsetHeight;
-      const left = Math.min(
-        Math.max(GAP, rect.left + rect.width / 2 - width / 2),
-        Math.max(GAP, window.innerWidth - width - GAP),
-      );
-      const above = rect.top - height - GAP;
-      const top =
-        above >= GAP ? above : Math.min(rect.bottom + GAP, window.innerHeight - height - GAP);
-      host.style.setProperty("left", `${Math.round(left)}px`, "important");
-      host.style.setProperty("top", `${Math.round(top)}px`, "important");
-      // A bar already up moves with its selection at once; a new one rises 4
-      // from the selection's side and fades in, and leaves 2 the other way.
-      if (!arriving) return;
-      const below = above < GAP;
-      bar.style.setProperty("--bc-bar-from", below ? "-4px" : "4px");
-      bar.style.setProperty("--bc-bar-to", below ? "-2px" : "2px");
-      bar.classList.remove("leaving", "shown");
-      void bar.offsetWidth;
-      bar.classList.add("shown");
+      anchor = rect;
+      place(rect, arriving);
     },
     hide() {
-      if (host.style.getPropertyValue("display") === "none" || bar.classList.contains("leaving")) return;
+      if (hidden() || bar.classList.contains("leaving")) return;
+      endGesture?.();
       bar.classList.add("leaving");
       bar.classList.remove("shown");
       const reduced = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ?? false;
@@ -438,13 +880,100 @@ function createBar(done: () => void): Bar {
         bar.classList.remove("leaving");
         host.style.setProperty("display", "none", "important");
         if (topLayer && host.matches(":popover-open")) host.hidePopover();
+        anchor = null;
+        geometry = null;
+        resized = false;
+        bar.style.setProperty("--bc-panel-height", "");
+        // The panel fades out with the bar, then goes.
+        if (view) {
+          view = null;
+          updateSelectionActions();
+          settingsButton.hidden = true;
+          toggleButton.hidden = true;
+          showingOriginal = false;
+          renderPanel();
+          bar.classList.remove("translating");
+        }
       }, reduced ? 0 : LEAVE_MS);
     },
+    setSelectionActions(addToChat, translate) {
+      canAddToChat = addToChat;
+      canTranslate = translate;
+      updateSelectionActions();
+    },
+    setPanel(next) {
+      if (next === view) return;
+      view = next;
+      if (!next || next.status !== "done") showingOriginal = false;
+      if (!next) geometry = null;
+      updateSelectionActions();
+      settingsButton.hidden = !next;
+      if (!next) toggleButton.hidden = true;
+      settingsButton.title = toolbarLabel("Translation settings", readLanguage());
+      window.clearTimeout(copiedTimer);
+      renderPanel();
+      if (anchor && !hidden() && !bar.classList.contains("leaving")) place(anchor, false);
+    },
+    pin() {
+      geometry = {
+        left: parseFloat(host.style.getPropertyValue("left")),
+        top: parseFloat(host.style.getPropertyValue("top")),
+        width: parseFloat(bar.style.getPropertyValue("--bc-panel-width")),
+        bodyHeight: PANEL_BODY_MAX,
+      };
+    },
+    reposition() {
+      if (anchor && !hidden()) place(anchor, false);
+    },
     dispose() {
+      endGesture?.();
       window.clearTimeout(doneTimer);
       window.clearTimeout(leaveTimer);
+      window.clearTimeout(copiedTimer);
+      unsubscribeMarks();
       bar.removeEventListener("mousedown", holdSelection);
       host.remove();
+    },
+  };
+}
+
+/** Opens the same web translation surface for a whole-message action. */
+export function createMessageTranslationBar(anchor: HTMLElement, tokens: ExtendedThemeTokens, actions: {
+  close(): void;
+  retry(): void;
+  settings(): void;
+}, original: string) {
+  const bar = createBar({
+    done: actions.close,
+    translate() {},
+    retry: actions.retry,
+    settings: actions.settings,
+    snapshot: () => null,
+  }, true, original);
+  bar.setTheme(tokens);
+  const onPointerDown = (event: Event) => {
+    const target = event.target;
+    if (target instanceof Node && (bar.host.contains(target) || anchor.contains(target))) return;
+    actions.close();
+  };
+  const onKeyDown = (event: KeyboardEvent) => { if (event.key === "Escape") actions.close(); };
+  const onResize = () => bar.reposition();
+  document.addEventListener("pointerdown", onPointerDown, true);
+  document.addEventListener("keydown", onKeyDown, true);
+  window.addEventListener("resize", onResize);
+  let shown = false;
+  return {
+    setView(view: SelectionTranslationView) {
+      bar.setPanel(view);
+      bar.show(anchor.getBoundingClientRect());
+      if (!shown) { bar.pin(); shown = true; }
+    },
+    setTheme: bar.setTheme,
+    dispose() {
+      document.removeEventListener("pointerdown", onPointerDown, true);
+      document.removeEventListener("keydown", onKeyDown, true);
+      window.removeEventListener("resize", onResize);
+      bar.dispose();
     },
   };
 }
@@ -452,6 +981,7 @@ function createBar(done: () => void): Bar {
 interface Controller {
   bar: Bar;
   refs: number;
+  hasTranslation(): boolean;
   dispose(): void;
 }
 
@@ -476,13 +1006,118 @@ export function claimSelectionBar(next: { dispose(): void }, scope: object = glo
   };
 }
 
+/** Hides Translate only where the settings say it is off; any other state explains itself in the panel. */
+function translationOffered(): boolean {
+  const settings = translationSettingsSync.snapshot();
+  return !(settings.status === "ready" && !settings.values.enabled);
+}
+
+/** The first line visible through the viewport and all its overflow clips. */
+function visibleRect(snapshot: Snapshot): DOMRect | null {
+  let left = 0;
+  let top = 0;
+  let right = window.innerWidth;
+  let bottom = window.innerHeight;
+  for (let element: Element | null = snapshot.element ?? snapshot.surface;
+    element && element !== document.body && element !== document.documentElement;
+    element = element.parentElement) {
+    const style = window.getComputedStyle(element);
+    if (style.display !== "inline" && style.display !== "contents" &&
+      (style.overflowX !== "visible" || style.overflowY !== "visible")) {
+      const box = element.getBoundingClientRect();
+      if (style.overflowX !== "visible") {
+        left = Math.max(left, box.left);
+        right = Math.min(right, box.right);
+      }
+      if (style.overflowY !== "visible") {
+        top = Math.max(top, box.top);
+        bottom = Math.min(bottom, box.bottom);
+      }
+    }
+    // Preview and details popovers escape the original ancestor's clip.
+    if (typeof (element as HTMLElement).showPopover === "function" && element.matches(":popover-open")) break;
+    // Without an open popover, details can still be fixed to the viewport.
+    // A transformed row instead gives the fixed layer an offset parent.
+    if (style.position === "fixed" && "offsetParent" in element && element.offsetParent === null) break;
+  }
+  if (left >= right || top >= bottom) return null;
+  return snapshot.rects.find((rect) =>
+    rect.bottom > top && rect.top < bottom && rect.right > left && rect.left < right) ?? null;
+}
+
 function startController(): Controller {
-  // Set after an action or scroll, until the selection changes: keep the
-  // highlight without letting a queued update bring the bar back over it.
+  // Set after an action or the reader's own scroll, until the selection
+  // changes: keep the highlight without letting a queued update bring the bar
+  // back over it.
   let dismissed = false;
-  const bar = createBar(() => {
-    dismissed = true;
+  /** When the reader last turned a wheel, moved a touch, or pressed a scrolling key. */
+  let gestureAt = Number.NEGATIVE_INFINITY;
+  /**
+   * What the held pointer pressed. Dragging a scrollbar, the element's own or
+   * an overlay beside it, scrolls with the button down; a press on the
+   * content inside (a double click, a selection drag) is not scrolling it.
+   */
+  let pressed: EventTarget | null = null;
+  /** The selection Translate was pressed for, and its job. */
+  let translation: { snapshot: Snapshot; job: SelectionTranslation; release(): void } | null = null;
+
+  const endTranslation = (clearPanel: boolean) => {
+    if (!translation) return;
+    translation.release();
+    translation.job.dispose();
+    translation = null;
+    if (clearPanel) bar.setPanel(null);
+  };
+  // The panel leaves with the bar, whichever path closes it.
+  const hide = () => {
+    endTranslation(false);
     bar.hide();
+    if (started.refs === 0) started.dispose();
+  };
+
+  const translate = () => {
+    const snapshot = readSelection();
+    if (!snapshot?.scope) return;
+    // A second press on the same selection keeps its panel; Retry re-runs.
+    if (translation && sameSelection(translation.snapshot, snapshot)) return;
+    endTranslation(true);
+    const { agentId, kind, streaming, lent } = snapshot.scope;
+    const job = createSelectionTranslation({
+      agentId,
+      kind,
+      text: snapshot.text,
+      streaming,
+      translator: lent?.translator,
+      configStore: lent ? translationAgentConfigStoreFor(lent.paseo) : undefined,
+      host: lent?.paseo,
+    });
+    const release = job.subscribe(() => {
+      if (translation?.job === job) bar.setPanel(job.view());
+    });
+    translation = { snapshot, job, release };
+    job.start();
+    bar.setPanel(job.view());
+    bar.pin();
+  };
+
+  const bar = createBar({
+    done() {
+      dismissed = true;
+      hide();
+    },
+    translate,
+    retry() {
+      translation?.job.start();
+    },
+    settings() {
+      const paseo = translation?.snapshot.scope?.lent?.paseo;
+      dismissed = true;
+      hide();
+      openTranslationSettings(paseo);
+    },
+    snapshot() {
+      return translation?.snapshot ?? readSelection();
+    },
   });
   let pending = 0;
 
@@ -490,10 +1125,25 @@ function startController(): Controller {
     pending = 0;
     const snapshot = dismissed ? null : readSelection();
     if (!snapshot) {
-      bar.hide();
+      if (translation) return;
+      hide();
       return;
     }
-    bar.show(snapshot.rect);
+    // Another selection never shows this one's result; its job keeps running
+    // into the session cache under its own key.
+    if (translation && !sameSelection(translation.snapshot, snapshot)) endTranslation(true);
+    if (translation && snapshot.scope) {
+      translation.job.setStreaming(snapshot.scope.streaming);
+      return;
+    }
+    // A reply following its output can carry the selection out of its pane.
+    const anchor = visibleRect(snapshot);
+    if (!anchor) {
+      hide();
+      return;
+    }
+    bar.setSelectionActions(snapshot.canAddToChat, snapshot.scope !== null && translationOffered());
+    bar.show(anchor);
   };
 
   // Selection events fire per character during a drag, so they coalesce to the
@@ -504,46 +1154,102 @@ function startController(): Controller {
     pending = window.setTimeout(sync, 0);
   };
 
+  /** Events from inside the shadow root are retargeted to the host. */
+  const onBar = (target: EventTarget | null) => target instanceof Node && bar.host.contains(target);
+
   const onPointerDown = (event: Event) => {
-    const target = event.target;
-    // Events from inside the shadow root are retargeted to the host, so a press
-    // on a button reads as a press on the bar and leaves it open.
-    if (target instanceof Node && bar.host.contains(target)) return;
-    bar.hide();
+    // A press on a button reads as a press on the bar and leaves it open.
+    if (onBar(event.target)) return;
+    pressed = event.target;
+    // A press elsewhere puts the bar away until the selection changes; a
+    // press that selects (a double click) changes it, and brings the bar.
+    dismissed = true;
+    hide();
+  };
+  const onPointerUp = () => {
+    pressed = null;
+  };
+  const draggingScrollbar = (target: EventTarget | null) => {
+    if (pressed === null) return false;
+    if (pressed === target) return true;
+    const scroller = target as Node | null;
+    return !(typeof scroller?.contains === "function" && pressed instanceof Node && scroller.contains(pressed));
+  };
+  const onGesture = (event: Event) => {
+    if (!onBar(event.target)) gestureAt = Date.now();
   };
   const onKeyDown = (event: KeyboardEvent) => {
-    if (event.key === "Escape") bar.hide();
+    if (event.key === "Escape") {
+      // Closed until the selection changes, as after a press elsewhere: a
+      // page scroll must not bring it back.
+      dismissed = true;
+      hide();
+    } else if (SCROLL_KEYS.has(event.key)) gestureAt = Date.now();
   };
 
   const onSelectionChange = () => {
     dismissed = false;
     schedule();
   };
-  const onScroll = () => {
-    dismissed = true;
-    bar.hide();
+  // Scrolling inside the panel does not reach here: scroll events do not
+  // cross the shadow root.
+  const onScroll = (event: Event) => {
+    if (translation) return;
+    // The reader's own scroll puts the bar away, as a press does.
+    const own = Date.now() - gestureAt < USER_SCROLL_MS || draggingScrollbar(event.target);
+    if (own) {
+      dismissed = true;
+      hide();
+      return;
+    }
+    // The page scrolled by itself: a reply following its output, a list
+    // keeping its place. The highlight stays, so the bar follows it.
+    schedule();
   };
+  const onResize = () => {
+    if (translation) bar.reposition();
+    else schedule();
+  };
+
+  // The translated reply settling rebinds its element, with no selection event.
+  // A cleared binding (the first half of a rebind, or an unmount) changes nothing.
+  const stopScopeWatch = watchSelectionScopeElements((element, scope) => {
+    if (!translation || !scope || translation.snapshot.surface.closest(SCOPE_SELECTOR) !== element) return;
+    translation.job.setStreaming(scope.streaming);
+  });
 
   document.addEventListener("selectionchange", onSelectionChange);
   document.addEventListener("pointerdown", onPointerDown, true);
+  document.addEventListener("pointerup", onPointerUp, true);
+  document.addEventListener("pointercancel", onPointerUp, true);
+  document.addEventListener("wheel", onGesture, { capture: true, passive: true });
+  document.addEventListener("touchmove", onGesture, { capture: true, passive: true });
   document.addEventListener("keydown", onKeyDown, true);
-  // The top-layer bar escapes a preview's clipping boundary. Dismiss it on
-  // scroll rather than following a selection outside its visible container.
+  // The reader's scroll dismisses the bar, the page's own scroll moves it;
+  // an open translation stays in place either way.
   window.addEventListener("scroll", onScroll, true);
-  window.addEventListener("resize", schedule);
+  window.addEventListener("resize", onResize);
 
   const started: Controller = {
     bar,
     refs: 0,
+    hasTranslation: () => translation !== null,
     dispose() {
       release();
+      stopScopeWatch();
+      endTranslation(false);
       window.clearTimeout(pending);
       document.removeEventListener("selectionchange", onSelectionChange);
       document.removeEventListener("pointerdown", onPointerDown, true);
+      document.removeEventListener("pointerup", onPointerUp, true);
+      document.removeEventListener("pointercancel", onPointerUp, true);
+      document.removeEventListener("wheel", onGesture, true);
+      document.removeEventListener("touchmove", onGesture, true);
       document.removeEventListener("keydown", onKeyDown, true);
       window.removeEventListener("scroll", onScroll, true);
-      window.removeEventListener("resize", schedule);
+      window.removeEventListener("resize", onResize);
       bar.dispose();
+      if (controller === started) controller = null;
     },
   };
   const release = claimSelectionBar(started);
@@ -563,6 +1269,7 @@ export function useSelectionActions(tokens: ExtendedThemeTokens, enabled: boolea
     return () => {
       active.refs -= 1;
       if (active.refs > 0) return;
+      if (active.hasTranslation()) return;
       active.dispose();
       if (controller === active) controller = null;
     };

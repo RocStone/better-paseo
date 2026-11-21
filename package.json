@@ -1,14 +1,15 @@
 {
   "name": "better-paseo",
-  "version": "1.5.5",
-  "build": 202611131123,
+  "version": "1.6.2",
+  "build": 202611182002,
   "private": true,
-  "description": "Paseo plugin: every agent on one board, on phone, iPad and desktop, plus a clearer, faster chat timeline",
+  "description": "Paseo plugin: every agent on one board across your phone, pad, and desktop, with a clearer, faster chat timeline",
   "license": "MIT",
   "packageManager": "npm@11.16.0",
   "scripts": {
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
+    "test:integration": "vitest run -c vitest.integration.config.ts",
     "check:hermes": "node scripts/check-hermes.mjs && node scripts/check-hermes.mjs --built",
     "build:client": "node scripts/build-client.mjs"
   },
@@ -21,8 +22,8 @@
     "remend": "1.4.0"
   },
   "devDependencies": {
-    "@getpaseo/client": "0.14.0",
-    "@getpaseo/plugin": "0.14.0",
+    "@getpaseo/client": "0.16.0",
+    "@getpaseo/plugin": "0.16.0",
     "@tanstack/react-query": "^5.90.11",
     "@types/node": "^22.15.3",
     "@types/react": "~19.2.0",

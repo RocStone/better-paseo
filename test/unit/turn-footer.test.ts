@@ -7,7 +7,7 @@ vi.mock("react-native", () => import("./helpers/rn-mock"));
 const motion = vi.hoisted(() => ({ reduced: false }));
 vi.mock("../../client/ui/use-reduced-motion", () => ({ useReducedMotion: () => motion.reduced }));
 const clipboard = vi.hoisted(() => ({ copyText: vi.fn(async (_text: string) => {}), show: vi.fn(), error: vi.fn() }));
-vi.mock("@getpaseo/plugin/client/react-native", () => ({
+vi.mock("@getpaseo/plugin/client/ui", () => ({
   Icon: (props: Record<string, unknown>) => React.createElement("Icon", props),
   copyText: clipboard.copyText,
   useToast: () => ({ show: clipboard.show, error: clipboard.error }),
@@ -752,6 +752,7 @@ describe("compact footer on one line", () => {
   it("counts only the items it draws", () => {
     expect(fitOneLine({ copy: 52, model: 84, clock: 54, duration: 46 }, 260, 8)).toEqual({ model: true, clock: true });
     expect(fitOneLine({ copy: 52, model: 84, clock: 54, duration: 46 }, 259, 8)).toEqual({ model: true, clock: false });
+    expect(fitOneLine({ copy: 52, translate: 24, model: 84, clock: 54, duration: 46 }, 260, 8)).toEqual({ model: true, clock: false });
     // No duration and no model: the clock has the room.
     expect(fitOneLine({ copy: 52, clock: 54 }, 114, 8)).toEqual({ model: true, clock: true });
     expect(fitOneLine({ copy: 52, model: 300, clock: 54, duration: 46 }, 200, 8)).toEqual({ model: false, clock: false });
