@@ -715,7 +715,8 @@ a failed parent stays in to review.
 
 When Paseo is connected to more than one host (Paseo 0.16 or later), the board shows the agents of
 every online host in the same lanes and order. A card from another host carries a small badge with
-that host's name, as Paseo's sidebar does; a filter by host joins the others. Open, preview and
+that host's name, as Paseo's sidebar does; a filter by host joins the others. Each host's background
+agents stay off the board, as this host's do. Open, preview and
 Archive act on the card's own host, and opening a remote card opens that agent in Paseo the way the
 sidebar does, which also marks it read there. Stop, Mark as read, Mark unread, Unarchive, the
 title actions and translation run through this plugin's server, which reaches only its own host, so

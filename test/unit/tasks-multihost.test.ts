@@ -389,6 +389,34 @@ describe("remote store", () => {
       vi.useRealTimers();
     }
   });
+
+  it("hides another host's background agents as the board's own, and keeps their parent running (Paseo 0.16)", async () => {
+    setLastTurnLoader(async () => []);
+    setSubagentLoader(async () => ({ version: "v", subagents: [] }));
+    setReadMarksLoader(async () => []);
+    const fake = createFakePaseo({
+      agents: [
+        makeAgent({ id: "remote-parent", workspaceId: "ws", status: "idle", updatedAt: at(10), lastUserMessageAt: at(10) }),
+        makeAgent({ id: "remote-helper", workspaceId: "ws", status: "running", background: true, updatedAt: at(20), labels: { "paseo.parent-agent-id": "remote-parent" } }),
+        makeAgent({ id: "remote-orphan", workspaceId: "ws", status: "running", background: true, updatedAt: at(21) }),
+        makeAgent({ id: "remote-hidden-ws", workspaceId: "bg", status: "running", updatedAt: at(22) }),
+      ],
+      workspaces: [makeWorkspace({ id: "ws", projectId: "prj", name: "app" }), makeWorkspace({ id: "bg", projectId: "prj", name: "helpers", background: true })],
+    });
+    vi.useFakeTimers();
+    const release = subscribeRemoteTasks(fake.paseo, () => {}, true);
+    try {
+      await vi.advanceTimersByTimeAsync(0);
+      const snapshot = remoteTasksSnapshot(fake.paseo, { doneWindow: "all", includeDone: true });
+      const shown = LANE_ORDER.flatMap((lane) => snapshot.lanes[lane].cards.map((item) => item.id));
+      expect(shown).toEqual(["remote-parent"]);
+      expect(snapshot.lanes.running.cards[0]?.waitingOnSubtasks).toBe(true);
+      expect(snapshot.lanes.running.cards[0]?.children.map((child) => child.id)).toContain("remote-helper");
+    } finally {
+      release();
+      vi.useRealTimers();
+    }
+  });
 });
 
 describe("translationAgentOf", () => {
