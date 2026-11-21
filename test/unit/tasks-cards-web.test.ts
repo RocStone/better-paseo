@@ -5,6 +5,8 @@
  * groups there; every button is a leaf.
  */
 import { afterAll, afterEach, describe, expect, it, vi } from "vitest";
+import { detailColors } from "../../client/tasks/cards/detail-charts";
+import { hoverFill } from "../../client/tasks/hover-fill";
 import React from "react";
 import { readFileSync } from "node:fs";
 
@@ -62,7 +64,7 @@ vi.mock("../../client/web", async (importOriginal) => ({
   },
 }));
 
-vi.mock("@getpaseo/plugin/client/react-native", async () => {
+vi.mock("@getpaseo/plugin/client/ui", async () => {
   const react = await import("react");
   const rn = await import("./helpers/rn-mock");
   return {
@@ -80,6 +82,7 @@ vi.mock("@getpaseo/plugin/client/react-native", async () => {
 });
 
 import "./helpers/quiet-renderer";
+import { asExitPlan } from "./helpers/plan-request";
 import TestRenderer, { act, type ReactTestInstance } from "react-test-renderer";
 import { CARD_PRESETS } from "../../shared/tasks-settings";
 import { previewSampleCards as sampleCards } from "../../client/tasks/sample-cards";
@@ -249,7 +252,21 @@ describe("TaskCardView on web", () => {
     expect(button().props.style.boxShadow).not.toContain(tokens.card.buttonShadowHover);
     await act(async () => renderer.unmount());
   });
-  it("deepens the bottom action bar's shadow on hover without a fill", async () => {
+  it("uses the card surface for error-dismiss hover", async () => {
+    const tokens = taskTokens(THEME);
+    const card = { ...sampleCards(NOW).find((item) => item.id === "sample-failed")!, error: "API error: limit reached" };
+    const renderer = await render(React.createElement(TaskCardView, props(card.id, { card, current: true })));
+    const button = () => renderer.root.find((node) => typeof node.type === "string" && node.props.accessibilityLabel === "关闭错误提示");
+    const style = () => Object.assign({}, ...[button().props.style].flat(Infinity).filter(Boolean));
+    expect(style().backgroundColor).toBe("transparent");
+    await act(async () => button().props.onHoverIn());
+    expect(style().backgroundColor).toBe(hoverFill(tokens.card.current, tokens.foreground, true, false));
+    expect(style().boxShadow).toBeUndefined();
+    await act(async () => button().props.onHoverOut());
+    expect(style().backgroundColor).toBe("transparent");
+    await act(async () => renderer.unmount());
+  });
+  it("uses the shared fill for bottom action bar hover", async () => {
     const tokens = taskTokens(THEME);
     const card = sampleCards(NOW).find((item) => item.id === "sample-running")!;
     const element = (phase: "idle" | "stopping") => React.createElement(DetailActionBar, {
@@ -269,15 +286,15 @@ describe("TaskCardView on web", () => {
     expect(String(look("detail-bar-open").boxShadow)).not.toContain(tokens.card.buttonShadowHover);
     expect(look("detail-bar-open").transitionProperty).toBe("background-color, border-color, box-shadow, color, opacity");
     await act(async () => button("detail-bar-open").props.onHoverIn());
-    expect(look("detail-bar-open").backgroundColor).toBe(tokens.card.background);
-    expect(String(look("detail-bar-open").boxShadow)).toContain(tokens.card.buttonShadowHover);
+    expect(look("detail-bar-open").backgroundColor).toBe(detailColors(tokens).rowHover);
+    expect(String(look("detail-bar-open").boxShadow)).not.toContain(tokens.card.buttonShadowHover);
     expect(String(look("detail-bar-open").boxShadow)).toContain("inset");
     await act(async () => button("detail-bar-open").props.onHoverOut());
     expect(look("detail-bar-open").backgroundColor).toBe(tokens.card.background);
     expect(String(look("detail-bar-open").boxShadow)).not.toContain(tokens.card.buttonShadowHover);
     await act(async () => button("detail-bar-stop").props.onHoverIn());
-    expect(look("detail-bar-stop").backgroundColor).toBe(tokens.card.background);
-    expect(String(look("detail-bar-stop").boxShadow)).toContain(tokens.card.buttonShadowHover);
+    expect(look("detail-bar-stop").backgroundColor).toBe(detailColors(tokens).rowHover);
+    expect(String(look("detail-bar-stop").boxShadow)).not.toContain(tokens.card.buttonShadowHover);
     await act(async () => renderer.update(element("stopping")));
     await act(async () => button("detail-bar-stop").props.onHoverIn());
     expect(look("detail-bar-stop").backgroundColor).toBe(tokens.card.background);
@@ -588,13 +605,77 @@ describe("TaskCardView on web", () => {
     await act(async () => done.unmount());
   });
 
-  it("floats Open alone on a waiting card's hover, leaving Stop to the menu", async () => {
+  // Every request kind takes a tool permission's section: a real ExitPlanMode,
+  // a mode change and an unknown request too, each divider saying what it waits for.
+  it.each([
+    { kind: "plan", divider: "待确认", answers: ["拒绝", "实施"], controls: ["停止", "打开"] },
+    { kind: "plan-resume", divider: "待确认", answers: ["拒绝", "实施", "Implement with Bypass"], controls: ["停止", "打开"] },
+    { kind: "mode", divider: "待授权", answers: ["允许", "拒绝"], controls: ["停止", "打开"] },
+    // "去回答" opens the tab itself, so no Open beside Stop.
+    { kind: "other", divider: "待回答", answers: ["去回答"], controls: ["停止"] },
+  ] as const)("lays a $kind request out as a tool permission's section on the desktop", async ({ kind, divider, answers: labels, controls: controlLabels }) => {
+    const input = sampleCards(NOW).find((item) => item.id === "sample-input")!;
+    const card: TaskCard = kind === "plan" || kind === "plan-resume" ? asExitPlan(input, { resume: kind === "plan-resume" }) : { ...input, permission: { ...input.permission!, kind, actions: [] } };
+    const onOpen = vi.fn();
     const onStop = vi.fn();
-    const renderer = await render(React.createElement(TaskCardView, props("sample-input", { onStop })));
-    await act(async () => hovers.get("task-card-sample-input")!.enter());
-    const overlay = renderer.root.find((node) => typeof node.type === "string" && node.props.testID === "task-card-open-overlay");
-    expect(overlay.findAll((node) => typeof node.type === "string" && node.props.accessibilityRole === "button").map((node) => node.props.accessibilityLabel)).toEqual(["打开"]);
-    expect(renderer.root.findAll((node) => typeof node.type === "string" && node.props.testID === "task-card-stop")).toEqual([]);
+    const onPermission = vi.fn();
+    const buttons = permissionButtons(card.permission!, "zh", true);
+    const renderer = await render(React.createElement(TaskCardView, props(card.id, { card, onOpen, onStop, onPermission, permissionButtons: buttons })));
+    const host = (id: string) => renderer.root.findAll((node) => typeof node.type === "string" && node.props.testID === id);
+    const nodes = renderer.root.findAll((node) => typeof node.type === "string");
+    const controls = host("task-card-control-row")[0]!;
+    const request = host("task-card-permission")[0]!;
+    expect(nodes.indexOf(controls)).toBeLessThan(nodes.indexOf(request));
+    expect(controls.findAll((node) => typeof node.type === "string" && node.props.accessibilityRole === "button").map((node) => node.props.accessibilityLabel)).toEqual(controlLabels);
+    expect(texts(request.find((node) => typeof node.type === "string" && node.props.testID === "task-card-question-divider"))).toEqual([divider, "·", "4m"]);
+    // A plan reads as one, by its title, not as the tool that asks for it; no icon beside it.
+    const title = request.find((node) => typeof node.type === "string" && node.props.numberOfLines === 2);
+    if (kind === "plan" || kind === "plan-resume") expect(texts(title).sort()).toEqual([" · ", "Ship the request layout", "计划"]);
+    expect(title.parent!.findAll((node) => (node.type as unknown) === "Icon")).toHaveLength(0);
+    const answers = request.find((node) => typeof node.type === "string" && node.props.testID === "task-card-answer-actions");
+    expect(answers.findAll((node) => typeof node.type === "string" && node.props.accessibilityRole === "button").map((node) => node.props.accessibilityLabel)).toEqual(labels);
+    // Its wait sits on the divider, not after the answers.
+    expect(host("task-card-answer-row")[0]!.findAll((node) => node.props.testID === "task-card-footer")).toHaveLength(0);
+    await act(async () => hovers.get(`task-card-${card.id}`)!.enter());
+    expect(renderer.root.findAll((node) => typeof node.type === "string" && /^task-card-.*-overlay$/.test(String(node.props.testID)))).toEqual([]);
+    for (const [index, label] of labels.entries()) {
+      await act(async () => answers.find((node) => typeof node.type === "string" && node.props.accessibilityLabel === label).props.onPress());
+      expect(onPermission).toHaveBeenLastCalledWith(card, buttons[index]);
+    }
+    expect(onOpen).not.toHaveBeenCalled();
+    await act(async () => controls.find((node) => typeof node.type === "string" && node.props.accessibilityLabel === "停止").props.onPress());
+    expect(onStop).toHaveBeenCalledWith(card, { withChildren: false });
+    await act(async () => renderer.unmount());
+  });
+
+  it("lays a tool permission out as a question: Stop and Open above the divider, Allow and Deny below it", async () => {
+    const card = sampleCards(NOW).find((item) => item.id === "sample-input")!;
+    const onOpen = vi.fn();
+    const onStop = vi.fn();
+    const onPermission = vi.fn();
+    const buttons = permissionButtons(card.permission!, "zh", true);
+    const renderer = await render(React.createElement(TaskCardView, props(card.id, { onOpen, onStop, onPermission, permissionButtons: buttons })));
+    const host = (id: string) => renderer.root.findAll((node) => typeof node.type === "string" && node.props.testID === id);
+    const nodes = renderer.root.findAll((node) => typeof node.type === "string");
+    const controls = host("task-card-control-row")[0]!;
+    const request = host("task-card-permission")[0]!;
+    // Shown without hover, before the request; nothing floats over the footer.
+    expect(nodes.indexOf(controls)).toBeLessThan(nodes.indexOf(request));
+    expect(controls.findAll((node) => typeof node.type === "string" && node.props.accessibilityRole === "button").map((node) => node.props.accessibilityLabel)).toEqual(["停止", "打开"]);
+    const divider = request.find((node) => typeof node.type === "string" && node.props.testID === "task-card-question-divider");
+    expect(texts(divider)).toEqual(["待授权", "·", "4m"]);
+    const answers = request.find((node) => typeof node.type === "string" && node.props.testID === "task-card-answer-actions");
+    expect(answers.findAll((node) => typeof node.type === "string" && node.props.accessibilityRole === "button").map((node) => node.props.accessibilityLabel)).toEqual(["允许", "拒绝"]);
+    await act(async () => hovers.get(`task-card-${card.id}`)!.enter());
+    expect(host("task-card-open-overlay")).toEqual([]);
+    expect(host("task-card-stop-overlay")).toEqual([]);
+    expect(host("task-card-open-tab")).toHaveLength(1);
+    // Allow answers in place; Stop and Open stay the task's.
+    await act(async () => answers.find((node) => typeof node.type === "string" && node.props.accessibilityLabel === "允许").props.onPress());
+    expect(onPermission).toHaveBeenCalledWith(card, buttons[0]);
+    expect(onOpen).not.toHaveBeenCalled();
+    await act(async () => controls.find((node) => typeof node.type === "string" && node.props.accessibilityLabel === "停止").props.onPress());
+    expect(onStop).toHaveBeenCalledWith(card, { withChildren: false });
     await act(async () => renderer.unmount());
   });
 
@@ -699,7 +780,13 @@ describe("TaskCardView on web", () => {
         .find((node) => typeof node.type === "string" && node.props.accessibilityLabel === "Measure the sidebar ring 运行中")
         .find((node) => typeof node.type === "string" && node.props.accessibilityLabel === "在工作区中打开");
     expect(jump().props.disabled).toBe(true);
+    const row = () => root.find((node) => typeof node.type === "string" && node.props.testID === "subtask-sample-child-1");
+    const backdrop = row().props.style.backgroundColor;
     await act(async () => hovers.get("subtask-sample-child-1")!.enter());
+    expect(row().props.style.backgroundColor).toBe(hoverFill(backdrop, taskTokens(THEME).foreground, true, false));
+    await act(async () => row().props.onPressIn());
+    expect(row().props.style.backgroundColor).toBe(hoverFill(backdrop, taskTokens(THEME).foreground, true, true));
+    await act(async () => row().props.onPressOut());
     expect(jump().props.disabled).toBe(false);
     expect(jump().props.style.opacity).toBe(1);
     jump().props.onPress();
@@ -1063,19 +1150,26 @@ describe("TaskCardView hover layout", () => {
 
   it("moves nothing when the pointer enters a card, with or without a meta row", async () => {
     for (const fields of [CARD_PRESETS.full, CARD_PRESETS.minimal]) {
-      for (const id of ["sample-running", "sample-child-1", "sample-input"]) {
+      for (const [id, kind] of [["sample-running"], ["sample-child-1"], ["sample-input"], ["sample-input", "mode"], ["sample-input", "plan"], ["sample-input", "other"]] as const) {
+        const base = sampleCards(NOW).find((item) => item.id === id)!;
+        const card = kind ? { ...base, permission: { ...base.permission!, kind } } : base;
         const renderer = await render(
           React.createElement(
             TaskCardView,
-            props(id, { fields: { ...fields.fields, labelLimit: fields.labelLimit }, permissionButtons: BUTTONS }),
+            props(id, { card, fields: { ...fields.fields, labelLimit: fields.labelLimit }, permissionButtons: BUTTONS }),
           ),
         );
         const before = layout(renderer.root);
         await act(async () => hovers.get(`task-card-${id}`)!.enter());
-        // Stop (Open alone on the waiting card) is on screen, floating over the row's end.
-        const overlayID = id === "sample-input" ? "task-card-open-overlay" : "task-card-stop-overlay";
-        const overlay = renderer.root.find((node) => typeof node.type === "string" && node.props.testID === overlayID);
-        expect(flat(overlay.props.style).position).toBe("absolute");
+        if (id === "sample-input") {
+          // A request's Stop and Open, of any kind, already sit on their row above its divider: hover floats nothing.
+          expect(renderer.root.findAll((node) => typeof node.type === "string" && /^task-card-.*-overlay$/.test(String(node.props.testID)))).toEqual([]);
+          expect(renderer.root.findAll((node) => typeof node.type === "string" && node.props.testID === "task-card-control-row")).toHaveLength(1);
+        } else {
+          // Stop is on screen, floating over the row's end.
+          const overlay = renderer.root.find((node) => typeof node.type === "string" && node.props.testID === "task-card-stop-overlay");
+          expect(flat(overlay.props.style).position).toBe("absolute");
+        }
         expect(layout(renderer.root)).toEqual(before);
         await act(async () => hovers.get(`task-card-${id}`)!.leave());
         expect(layout(renderer.root)).toEqual(before);

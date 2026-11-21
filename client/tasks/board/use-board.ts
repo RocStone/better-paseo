@@ -3,7 +3,7 @@ import type { PluginScreenProps } from "@getpaseo/plugin/client";
 import { usePaseo, useSettings } from "@getpaseo/plugin/client";
 import { useTitleUpdateControl } from "../actions/title-update";
 import { TITLE_GENERATION_SETTINGS } from "../../../shared/title-generation";
-import { useToast } from "@getpaseo/plugin/client/react-native";
+import { useToast } from "@getpaseo/plugin/client/ui";
 import type { PaseoApi } from "@getpaseo/client";
 import { DEFAULT_TASKS_SETTINGS, TASKS_SETTINGS, effectiveCard, type CardSettings, type LaneWidth, type TasksSettings } from "../../../shared/tasks-settings";
 import { permissionButtons, respondToPermission, useArchiveControl, useReadControl, useStopControl, useUnarchiveControl, useUnreadControl, type ArchiveControl, type PermissionButton, type ReadControl, type StopControl, type UnarchiveControl, type UnreadControl } from "../actions";
@@ -154,7 +154,8 @@ export const NOTICE_MS = 4000;
 /** The layout's own answers to a parent link and a details request. */
 export interface BoardLayoutHandlers {
   reveal(agentId: string): void;
-  details(card: TaskCard, preview?: boolean): void;
+  /** `parent`: the card whose subtask row asked for these details, to go back to. */
+  details(card: TaskCard, preview?: boolean, parent?: string): void;
 }
 
 const NO_BUTTONS: PermissionButton[] = [];
@@ -539,7 +540,7 @@ export function useBoard(
   const requestProjectIcon = useCallback((projectId: string) => latest.current.tasks.requestProjectIcon(projectId), []);
   const buttonsFor = useCallback((card: TaskCard) => buttonsIn(card, language), [language]);
   const hasNavigation = props.navigation !== undefined;
-  const questionDialog = questionDialogStore(paseo);
+  const questionDialog = useMemo(() => questionDialogStore(paseo).fork(), [paseo]);
   const submitQuestions = useCallback(async (state: QuestionDialogState) => {
     const current = latest.current;
     // This plugin's server checks directories on its own host only; another host's agent goes straight to it.
@@ -563,7 +564,7 @@ export function useBoard(
       onReveal: (agentId, parentId) => {
         if (parentId && !findCard(latest.current.lanes, agentId)) {
           const card = cardById(agentId);
-          if (card) handlers.current?.details(card, true);
+          if (card) handlers.current?.details(card, true, parentId);
           else open(parentId);
           return;
         }

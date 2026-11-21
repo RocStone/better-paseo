@@ -1,6 +1,7 @@
+import { UPDATE_INDICATOR_COLOR } from "../../ui/update-indicator";
 import React, { memo, useCallback, useContext, useEffect, useRef, useState, type ReactNode, type Ref } from "react";
 import { Animated, Platform, Pressable, View, useWindowDimensions, type LayoutChangeEvent, type TextInput as NativeTextInput } from "react-native";
-import { Icon, ScrollView } from "@getpaseo/plugin/client/react-native";
+import { Icon, ScrollView } from "@getpaseo/plugin/client/ui";
 import type { PluginTheme } from "@getpaseo/plugin";
 import { LANE_WIDTHS } from "../../../shared/tasks-settings";
 import { TaskText as Text, HOST_FONT as F, HOST_LINE, TASK_MONO, useTasksFontScale, taskControlHeight } from "../typography";
@@ -22,6 +23,7 @@ import { useReducedMotion } from "../../ui/use-reduced-motion";
 import { useSwitchSpace } from "../../ui/use-switch-space";
 import { liftStyle, scaleStyle, surfaceLift } from "../cards/surface-lift";
 import { usePressCue } from "../cards/action-pressable";
+import { hoverFill } from "../hover-fill";
 import { FullConversationSwitch, SearchInput } from "./search-loading";
 import { SearchCoverageItems } from "./search-coverage";
 import { tasksSettingsOpener } from "./enabled";
@@ -88,7 +90,7 @@ function MoreActions({ board, theme, items, updateAvailable }: { board: BoardCon
       tip={busy ? `${board.strings.refreshTasks} (⌥R)` : board.strings.more}
       testID="desktop-toolbar-more"
     />
-    {updateAvailable ? <View testID="desktop-more-update-dot" pointerEvents="none" style={{ position: "absolute", top: 0, right: 0, width: 7, height: 7, borderRadius: 4, backgroundColor: taskTokens(theme).danger }} /> : null}
+    {updateAvailable ? <View testID="desktop-more-update-dot" pointerEvents="none" style={{ position: "absolute", bottom: 2, right: 2, width: 4, height: 4, borderRadius: 2, backgroundColor: UPDATE_INDICATOR_COLOR }} /> : null}
     {open ? <CascadeMenu theme={theme} width={menuWidth(200, scale, window.width - MENU_EDGE * 2)} fitContent top={toolbarButtonSize(scale) + 6} align="right" onClose={() => setOpen(false)} testID="desktop-more-menu" sections={[{ key: "more", items: [
       { key: "refresh", label: board.strings.refreshTasks, icon: "RefreshCw", shortcut: "⌥R", disabled: busy, onSelect: press },
       ...items,
@@ -169,7 +171,7 @@ function DesktopToolbarView(props: {
       { key: "archived", label: strings.archivedLane.row, checked: board.showArchived, onSelect: () => board.setShowArchived(!board.showArchived) },
     ] : []),
     { key: "empty-groups", label: board.showEmptyGroups ? strings.emptyGroups.hide : strings.emptyGroups.show, icon: board.showEmptyGroups ? "EyeOff" : "Eye", shortcut: "G", onSelect: () => board.setShowEmptyGroups(!board.showEmptyGroups) },
-    ...(openSettings ? [{ key: "settings", label: strings.openSettings, accessibilityLabel: updateAvailable ? `${strings.openSettings}, ${updateLabel}` : undefined, icon: "Bolt", shortcut: ",", onSelect: openSettings, trailing: updateAvailable ? <View testID="desktop-settings-update-dot" pointerEvents="none" style={{ width: 7, height: 7, borderRadius: 4, backgroundColor: taskTokens(theme).danger }} /> : undefined }] : []),
+    ...(openSettings ? [{ key: "settings", label: strings.openSettings, accessibilityLabel: updateAvailable ? `${strings.openSettings}, ${updateLabel}` : undefined, icon: "Bolt", shortcut: ",", onSelect: openSettings, trailing: updateAvailable ? <View testID="desktop-settings-update-dot" pointerEvents="none" style={{ width: 4, height: 4, borderRadius: 2, alignSelf: "center", backgroundColor: UPDATE_INDICATOR_COLOR }} /> : undefined }] : []),
     ...(compactActions && props.sidebar ? [{ key: "sidebar", label: props.sidebar.open ? strings.sidebar.hide : strings.sidebar.show, onSelect: props.sidebar.onToggle }] : []),
   ];
   const search = (
@@ -386,9 +388,7 @@ function SidebarSwitch(props: { open: boolean; sheet: boolean; onToggle(): void;
   const size = toolbarButtonSize(scale);
   const [hovered, setHovered] = useState(false);
   const press = usePressCue(hovered);
-  const reduced = useReducedMotion();
-  const lift = surfaceLift(hovered, press.pressed, reduced, "control", press.input);
-  const line = Platform.OS === "web" && !hovered ? "transparent" : colors.border;
+  const line = Platform.OS === "web" ? "transparent" : colors.border;
   return (
     <Pressable
       accessibilityRole="button"
@@ -409,11 +409,10 @@ function SidebarSwitch(props: { open: boolean; sheet: boolean; onToggle(): void;
       style={{
         width: size,
         height: size,
-        borderRadius: Platform.OS === "web" ? 7 : size / 2,
+        borderRadius: size / 2,
         borderWidth: HAIRLINE,
-        backgroundColor: colors.surface0,
-        ...liftStyle(() => taskTokens(props.theme), lift, { border: line }),
-        ...scaleStyle(lift.scale),
+        backgroundColor: hoverFill(colors.surface0, colors.foreground, hovered, press.pressed),
+        borderColor: line,
         alignItems: "center",
         justifyContent: "center",
       }}
@@ -437,10 +436,8 @@ function BarSwitch(props: { icon: string; on: boolean; onPress(): void; label: s
   const icon = actionIconSize(scale);
   const [hovered, setHovered] = useState(false);
   const press = usePressCue(hovered);
-  const reduced = useReducedMotion();
-  const lift = surfaceLift(hovered, press.pressed, reduced, "control", press.input);
-  const line = Platform.OS === "web" && !hovered ? "transparent" : colors.border;
-  const background = colors.surface0;
+  const line = Platform.OS === "web" ? "transparent" : colors.border;
+  const background = hoverFill(colors.surface0, colors.foreground, hovered, press.pressed);
   const iconColor = colors.foreground;
   return (
     <Pressable
@@ -466,11 +463,10 @@ function BarSwitch(props: { icon: string; on: boolean; onPress(): void; label: s
         width: size,
         height: size,
         flexShrink: 0,
-        borderRadius: Platform.OS === "web" ? 7 : size / 2,
+        borderRadius: size / 2,
         borderWidth: HAIRLINE,
         backgroundColor: background,
-        ...liftStyle(() => taskTokens(props.theme), lift, { border: line }),
-        ...scaleStyle(lift.scale),
+        borderColor: line,
         alignItems: "center",
         justifyContent: "center",
       }}
@@ -915,7 +911,7 @@ function Chip(props: { chip: ActiveChip; onClear(): void; clearLabel: string; th
   if (chip.key === "q") return (
     <View testID="search-query-chip" style={{ height: taskControlHeight(Platform.OS === "web" ? 24 : 36, scale), maxWidth: "100%", flexShrink: props.shrink === false ? 0 : 1, flexDirection: "row", alignItems: "center", gap: 4, paddingLeft: 9, paddingRight: 4 }}>
       <View pointerEvents="none" testID="search-query-chip-fill" style={{ position: "absolute", left: 0, right: 0, height: taskControlHeight(24, scale), borderRadius: taskControlHeight(12, scale), backgroundColor: taskTokens(theme).card.pillFill, borderWidth: HAIRLINE, borderColor: taskTokens(theme).card.pillBorder }} />
-      {props.onEdit ? <HoverPressable accessibilityRole="button" accessibilityLabel={props.onEdit.label} accessibilityHint={props.onEdit.hint} onPress={props.onEdit.press} testID="search-query-edit" style={() => ({ minWidth: 0, flexShrink: 1, height: "100%", flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 4 })}>
+      {props.onEdit ? <HoverPressable hoverTheme={props.theme} accessibilityRole="button" accessibilityLabel={props.onEdit.label} accessibilityHint={props.onEdit.hint} onPress={props.onEdit.press} testID="search-query-edit" style={() => ({ minWidth: 0, flexShrink: 1, height: "100%", flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 4 })}>
         {props.lead}
         <Text numberOfLines={1} style={{ fontSize: F.sm, color: colors.foregroundMuted, maxWidth: 220, flexShrink: 1 }}>{chip.value}</Text>
       </HoverPressable> : <Text numberOfLines={1} style={{ fontSize: F.sm, color: colors.foregroundMuted, maxWidth: 220, flexShrink: 1 }}>{chip.value}</Text>}
@@ -967,7 +963,7 @@ function GroupChip(props: { group: ChipGroup; open: boolean; onPress(): void; on
           backgroundColor: props.open ? colors.surface1 : "transparent",
         }}
       >
-        <HoverPressable
+        <HoverPressable hoverTheme={props.theme}
           accessibilityRole="button"
           accessibilityState={{ expanded: props.open }}
           accessibilityLabel={props.group.label}
@@ -1006,13 +1002,13 @@ function GroupChip(props: { group: ChipGroup; open: boolean; onPress(): void; on
 function ClearButton(props: { label: string; onPress(): void; theme: PluginTheme; touch?: boolean }) {
   const colors = props.theme.colors;
   return (
-    <HoverPressable
+    <HoverPressable hoverTheme={props.theme}
       accessibilityRole="button"
       accessibilityLabel={props.label}
       {...tipProps(props.label)}
       onPress={props.onPress}
       hitSlop={props.touch ? { top: 8, bottom: 8, left: 4, right: 4 } : undefined}
-      style={(hovered, pressed) => ({ width: 20, height: 20, borderRadius: 4, alignItems: "center", justifyContent: "center", backgroundColor: "transparent", ...liftStyle(() => taskTokens(props.theme), surfaceLift(hovered, pressed)) })}
+      style={(hovered, pressed) => ({ width: 20, height: 20, borderRadius: 10, alignItems: "center", justifyContent: "center", backgroundColor: "transparent", ...liftStyle(() => taskTokens(props.theme), surfaceLift(hovered, pressed)) })}
     >
       <Icon name="X" size={12} color={colors.foregroundMuted} />
     </HoverPressable>
@@ -1022,7 +1018,7 @@ function ClearButton(props: { label: string; onPress(): void; theme: PluginTheme
 function ClearAllButton(props: { board: BoardController; theme: PluginTheme }) {
   const scale = useTasksFontScale();
   return (
-    <HoverPressable
+    <HoverPressable hoverTheme={props.theme}
       accessibilityRole="button"
       onPress={() => props.board.setParams(clearedParams)}
       style={(hovered, pressed) => ({
@@ -1057,7 +1053,7 @@ function MenuButton(props: { icon: string | React.ReactElement; label: string; c
   const size = iconOnly ? roundButtonSize(scale) : toolbarButtonSize(scale);
   return (
     <View pointerEvents="box-none" style={{ zIndex: props.open ? 20 : 0, maxWidth: Platform.OS === "web" ? "100%" : undefined, flexShrink: Platform.OS === "web" ? 1 : 0 }}>
-      <HoverPressable
+      <HoverPressable hoverTheme={props.theme}
         accessibilityRole="button"
         accessibilityLabel={props.accessibilityLabel ?? (props.compact ? props.label : undefined)}
         accessibilityState={{ expanded: props.open }}

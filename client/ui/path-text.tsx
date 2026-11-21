@@ -1,6 +1,6 @@
 import React, { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { Platform, Pressable, StyleSheet, Text, View, type LayoutChangeEvent, type TextStyle } from "react-native";
-import { Icon } from "@getpaseo/plugin/client/react-native";
+import { Icon } from "@getpaseo/plugin/client/ui";
 import { useAgent, useWorkspace } from "@getpaseo/plugin/client";
 import type { ExtendedThemeTokens } from "../components/theme-tokens";
 import { radiusV2, space } from "../components/theme-tokens";
@@ -235,7 +235,7 @@ export function PathText({
         // it is a <div> with role="button" (see `useContainerButton`).
         accessibilityRole={button.accessibilityRole}
         accessibilityLabel={formatted.absolutePath}
-        accessibilityHint={touchFirst || !reveal ? "Copies the path" : "Reveals the file"}
+        accessibilityHint={touchFirst || !reveal ? "Copies the path" : "Opens or reveals the path"}
         onPress={rowBodyPress ?? onPress}
         delayLongPress={rowBodyPress ? 500 : undefined}
         onLongPress={rowLongPress ?? (capabilities.touch ? copyAbsolute : undefined)}

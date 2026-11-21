@@ -5,10 +5,14 @@ import "./helpers/quiet-renderer";
 
 vi.mock("react-native", () => import("./helpers/rn-mock"));
 vi.mock("@getpaseo/plugin/client", async (original) => {
-  const rpc = async () => ({ state: "idle" });
-  return { ...await original<object>(), useRpc: () => rpc };
+  const rpc = async () => ({ state: "idle", entries: [], error: null });
+  return {
+    ...await original<object>(),
+    useRpc: () => rpc,
+    useSettings: () => ({ status: "loading", saving: false, saveError: null, save: async () => true, reset: async () => true }),
+  };
 });
-vi.mock("@getpaseo/plugin/client/react-native", async () => {
+vi.mock("@getpaseo/plugin/client/ui", async () => {
   const rn = await import("./helpers/rn-mock");
   return { Icon: rn.View, TextInput: rn.TextInput, ScrollView: rn.ScrollView };
 });

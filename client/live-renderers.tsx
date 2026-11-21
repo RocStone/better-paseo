@@ -1,6 +1,7 @@
-import React, { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import React, { memo, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { Platform, StyleSheet, View, type LayoutChangeEvent, type ViewStyle } from "react-native";
 import { useAgent, usePaseo, useRpc } from "@getpaseo/plugin/client";
+import { useToast } from "@getpaseo/plugin/client/ui";
 import { useRevealedText } from "./ui/use-revealed-text";
 import { ChatComposerContext, type ComposerTimelineItemProps as PluginTimelineItemProps } from "./ui/chat-composer";
 import type { PluginTheme } from "@getpaseo/plugin";
@@ -29,11 +30,16 @@ import { useIsLatestPrompt } from "./state/latest-prompt";
 import { useTurnFooter } from "./state/turn-footers";
 import { setPromptUsage, usePromptUsage } from "./state/prompt-usage";
 import { useAgentMessageSender } from "./state/agent-message-senders";
+import { useTimelineLevelPill } from "./timeline-level-control";
 import { useFooterModel } from "./state/footer-model";
 import type { AssistantRowData } from "./assistant-transform";
 import { HOST_REWIND_MENU } from "./ui/host-rewind";
 import { publishHubSnapshot } from "./hub-activity";
 import { MarkdownView } from "./components/markdown/markdown-view";
+import { variantMetrics } from "./components/markdown/render/styles";
+import { firstLineCenter, firstLineSource } from "./components/markdown/render/first-line";
+import { hairline } from "./ui/tokens/platform";
+import { useZoomedTokens } from "./ui/text-zoom";
 import { TimelineTailHub } from "./components/hub-live";
 import { AssistantFooter } from "./components/turn-footer";
 import { SystemCard } from "./components/system-card";
@@ -45,11 +51,14 @@ import { BlockPlacementContext, type BlockKind } from "./details/contracts";
 import { DetailsHostSlot } from "./details/shell/details-host-slot";
 import type { TaskListData, TaskItemData, NoticeCalloutData } from "../shared/contracts";
 import { revealPathRpc } from "../shared/file-rpc";
+import { revealWithSetting } from "./i18n/file-open-error";
 import { isImagePath, useImageFile } from "./image-file";
 import { classifyTool } from "./tools/classify";
 import { defaultToolExpanded, toolDisclosureKey } from "./tools/disclosure";
 import { PathContext, usePathContextValue } from "./ui/path-text";
 import { probeCard, textItemKey } from "./debug/perf";
+import { SelectionTranslationScope } from "./translation/ui";
+import { InlineTranslation, InlineTranslateButton, InlineTranslationNotice, type InlineTranslationState } from "./translation/inline";
 import {
   assistantPropsEqual,
   noticePropsEqual,
@@ -60,6 +69,9 @@ import {
 } from "./state/render-equality";
 import { noteTimelineRowShown } from "./state/startup-settled";
 import { useHeldRow } from "./ui/hidden-row";
+import { useHover } from "./ui/use-hover";
+import { useInputCapabilities } from "./ui/use-input-capabilities";
+import { useTranslationSettingsState } from "./translation/settings-store";
 
 type JsonValue = boolean | null | number | string | JsonValue[] | { [key: string]: JsonValue };
 
@@ -158,6 +170,8 @@ function BlockPlacement({ agentId, timestamp, kind, children }: {
   const value = useMemo(() => ({ agentId, at, kind }), [agentId, at, kind]);
   // Work held back until the chat has drawn waits for the first row (`startup-settled.ts`).
   useEffect(noteTimelineRowShown, []);
+  // The agent's Agent steps pill (`timeline-level-control.ts`).
+  useTimelineLevelPill(agentId);
   return <BlockPlacementContext.Provider value={value}>{children}</BlockPlacementContext.Provider>;
 }
 
@@ -169,6 +183,7 @@ function LiveToolCallRendererBody(props: PluginTimelineItemProps<LiveToolCallPay
     item.data.phase === undefined ? null : item.data.phase === "streaming",
   );
   const revealPath = useRpc(revealPathRpc);
+  const toast = useToast();
   const preferences = useEnhancerPreferences();
   const tokens = useThemeTokens(theme, preferences, layout.platform);
   useSelectionActions(tokens, preferences.selectionActions);
@@ -200,14 +215,13 @@ function LiveToolCallRendererBody(props: PluginTimelineItemProps<LiveToolCallPay
   const groupFailed = group?.some((call) => call.status === "failed") ?? false;
 
   // The daemon side owns the shell, so revealing a file is one RPC. Paths
-  // arrive absolute (PathText resolves them); a path the daemon cannot stat
-  // answers with an error the press simply ignores.
+  // arrive absolute (PathText resolves them); errors are shown in a toast.
   const pathCwdRef = useRef<string | undefined>(undefined);
   const handleRevealPath = useCallback(
     (path: string) => {
-      void revealPath({ cwd: pathCwdRef.current ?? "", path }).catch(() => {});
+      revealWithSetting(revealPath, toast, pathCwdRef.current ?? "", path);
     },
-    [revealPath],
+    [revealPath, toast],
   );
   // Roots for relative paths (plan §3.9): workspace, project, agent cwd.
   const pathContext = usePathContextValue(agentId, handleRevealPath);
@@ -271,17 +285,19 @@ function LiveToolCallRendererBody(props: PluginTimelineItemProps<LiveToolCallPay
           {probe.node}
           <PreferenceSyncSlot />
           <PathContext.Provider value={pathContext}>
-            <ToolCallout
-              data={view}
-              previewKey={`${disclosureKey}:preview`}
-              groupCalls={group.length > 1 ? group : undefined}
-              tokens={tokens}
-              compact={layout.compact}
-              expanded={expanded}
-              onExpandedChange={setExpanded}
-              imageFile={imageFile}
-              requestImage={readsImage ? markPreviewed : undefined}
-            />
+            <SelectionTranslationScope agentId={agentId} kind="tool_output" streaming={false}>
+              <ToolCallout
+                data={view}
+                previewKey={`${disclosureKey}:preview`}
+                groupCalls={group.length > 1 ? group : undefined}
+                tokens={tokens}
+                compact={layout.compact}
+                expanded={expanded}
+                onExpandedChange={setExpanded}
+                imageFile={imageFile}
+                requestImage={readsImage ? markPreviewed : undefined}
+              />
+            </SelectionTranslationScope>
           </PathContext.Provider>
         </>
       ) : null}
@@ -314,6 +330,7 @@ function LiveReasoningRendererBody({
   useSelectionActions(tokens, preferences.selectionActions);
   const text = item.data.text || "";
   const streaming = item.data.phase === "streaming";
+  const translation = useMemo(() => ({ agentId, theme }), [agentId, theme]);
   const settledKey = streaming ? undefined : `thought:${text}`;
   // The host updates the timestamp as a thought streams, without moving its slot.
   const arrivalRef = useRef({ agentId, at: timestamp.getTime() });
@@ -331,7 +348,7 @@ function LiveReasoningRendererBody({
   const [expanded, setExpanded] = useDisclosure(storeKey, false);
   const toggle = useCallback(() => setExpanded(!expanded), [expanded, setExpanded]);
 
-  // The host's reveal runs a frame loop only for "streaming". A collapsed card
+  // The reveal runs a frame loop only for "streaming". A collapsed card
   // shows one line, so it takes the text whole. The hook still follows the text,
   // so a card opened mid-stream picks up the reveal where the text stands; but
   // its "complete" output lands a commit late (`useRevealedText` settles in a
@@ -367,17 +384,20 @@ function LiveReasoningRendererBody({
     >
       {probe.node}
       <PreferenceSyncSlot />
-      <ReasoningCardMemo
-        segmentation={segmentation}
-        streaming={streaming}
-        durationMs={durationMs}
-        expanded={expanded}
-        onToggle={toggle}
-        tokens={tokens}
-        compact={layout.compact}
-        storeKey={storeKey}
-        copyText={text}
-      />
+      <SelectionTranslationScope agentId={agentId} kind="reasoning" streaming={streaming}>
+        <ReasoningCardMemo
+          segmentation={segmentation}
+          streaming={streaming}
+          durationMs={durationMs}
+          expanded={expanded}
+          onToggle={toggle}
+          tokens={tokens}
+          compact={layout.compact}
+          storeKey={storeKey}
+          copyText={text}
+          translation={translation}
+        />
+      </SelectionTranslationScope>
       <DetailsHostSlot agentId={agentId} itemKey={hostSlotKey} tokens={tokens} compact={layout.compact} />
     </View>
   );
@@ -493,7 +513,7 @@ const todoStyles = StyleSheet.create({
 export interface LiveAssistantPayload extends AssistantRowData {}
 
 /**
- * Whether a streamed reply reveals at the host's own cadence
+ * Whether a streamed reply reveals at the host's cadence
  * (`useRevealedText`, plan §3.1 item 8) or draws each chunk as it arrives.
  * Decided by an A/B (F1, 3+ alternating runs, markdown-long and
  * table-streaming): on the iOS simulator the reveal changed total assistant
@@ -511,30 +531,75 @@ const ASSISTANT_REVEAL = { web: false, native: true } as const;
  * file-path links still need `assistantMarkdown` off to hand the turn back.
  */
 function LiveAssistantRendererBody(props: PluginTimelineItemProps<LiveAssistantPayload>) {
-  return props.item.data.blockIndex !== undefined && props.item.data.messageText === undefined
-    ? <AssistantBlockRenderer {...props} /> : <LiveAssistantMessageRenderer {...props} />;
+  if (parseSystemEnvelope(props.item.data.text)) return <LiveAssistantMessageRenderer {...props} />;
+  return <InlineTranslation agentId={props.agentId} kind="assistant_message" text={props.item.data.text} streaming={props.item.data.phase === "streaming"}>
+    {(inline) => props.item.data.blockIndex !== undefined && props.item.data.messageText === undefined
+      ? <AssistantBlockRenderer {...props} inline={inline} /> : <LiveAssistantMessageRenderer {...props} inline={inline} />}
+  </InlineTranslation>;
+}
+
+// The reply's right gutter, which the translate button sits in.
+const REPLY_TRANSLATE_GUTTER = 32;
+
+function InlineReplyBlock({ state, theme, tokens: given, compact, text, firstBlock, listContinuation, children }: {
+  state: InlineTranslationState; theme: PluginTheme; tokens: ReturnType<typeof useThemeTokens>; compact: boolean;
+  /** The Markdown the block shows, original or translated: the button centers on its first line. */
+  text: string; firstBlock: boolean; listContinuation?: boolean; children: ReactNode;
+}) {
+  const { hovered, hoverProps } = useHover();
+  const input = useInputCapabilities(compact);
+  const settings = useTranslationSettingsState();
+  const preferences = useEnhancerPreferences();
+  const tokens = useZoomedTokens(given);
+  const metrics = variantMetrics(preferences.markdownVariant, tokens.typography.content.size, compact);
+  const gap = firstBlock ? 0 : listContinuation ? metrics.itemGap : metrics.blockGap;
+  const ruleHeight = Number(hairline(tokens.platform).height ?? 1);
+  const source = firstLineSource(text);
+  const monoLineHeight = tokens.typography.mono.lineHeight;
+  const center = useMemo(() => firstLineCenter(source, { metrics, ruleHeight, monoLineHeight, first: firstBlock }),
+    [source, metrics, ruleHeight, monoLineHeight, firstBlock]);
+  const top = gap + center - REPLY_TRANSLATE_GUTTER / 2;
+  const enabled = settings.status !== "ready" || settings.values.enabled;
+  const loading = state.active && state.view && ["running", "settings-loading", "config-loading"].includes(state.view.status);
+  const gutter = enabled ? REPLY_TRANSLATE_GUTTER : 0;
+  // The slot is positioned in the content's own box, so a status notice above
+  // the content does not shift it, and that box spans the gutter so the slot
+  // lands beside the text instead of over its last column.
+  return <View onPointerEnter={hoverProps.onHoverIn} onPointerLeave={hoverProps.onHoverOut} style={{ position: "relative" }}>
+    <View style={{ paddingRight: gutter }}><InlineTranslationNotice state={state} theme={theme} /></View>
+    <View style={{ position: "relative", paddingRight: gutter }}>
+      <View style={loading ? { opacity: 0.55 } : undefined}>{children}</View>
+      {enabled ? <View testID="reply-translation-slot" style={{ position: "absolute", right: 0, top, opacity: hovered || input.touch || state.active ? 1 : 0 }} pointerEvents={hovered || input.touch || state.active ? "auto" : "none"}>
+        <InlineTranslateButton state={state} theme={theme} testID="reply-translate" timeline />
+      </View> : null}
+    </View>
+  </View>;
 }
 
 /** Interior blocks have no message footer, tail registration or timing reads. */
-function AssistantBlockRenderer({ item, theme, layout, agentId, timestamp }: PluginTimelineItemProps<LiveAssistantPayload>) {
+function AssistantBlockRenderer({ item, theme, layout, agentId, timestamp, inline }: PluginTimelineItemProps<LiveAssistantPayload> & { inline: InlineTranslationState }) {
   const preferences = useEnhancerPreferences();
   const tokens = useThemeTokens(theme, preferences, layout.platform);
   useSelectionActions(tokens, preferences.selectionActions);
   const revealPath = useRpc(revealPathRpc);
+  const toast = useToast();
   const cwd = useAgent(agentId, (agent) => agent.cwd);
   const onRevealPath = useCallback((path: string) => {
-    void revealPath({ cwd: cwd ?? "", path }).catch(() => {});
-  }, [cwd, revealPath]);
+    revealWithSetting(revealPath, toast, cwd ?? "", path);
+  }, [cwd, revealPath, toast]);
   const probe = probeCard("assistant", textItemKey("assistant", item.data.text), false);
   const hostSlotKey = useRef(`assistant:${agentId}:${timestamp.getTime()}:${item.data.blockIndex ?? "block"}`).current;
+  const shown = inline.active && inline.view?.status === "done" ? inline.view.result.translation : item.data.text;
   return <View {...surfaceProps(itemRootFont(preferences.uiFont), pluginRoot)} {...probe.viewProps}
     style={assistantBlockStyles.continuation}>
     {probe.node}
     <PreferenceSyncSlot />
-    <MarkdownView text={item.data.text} tokens={tokens} variant={preferences.markdownVariant}
-      compact={layout.compact} firstBlock={item.data.blockIndex === 0} onRevealPath={onRevealPath}
-      listContinuation={item.data.listContinuation}
-      probeId={`assistant:${timestamp.getTime()}:${item.data.blockIndex}`} />
+    <SelectionTranslationScope agentId={agentId} kind="assistant_message" streaming={item.data.phase === "streaming"}>
+      <InlineReplyBlock state={inline} theme={theme} tokens={tokens} compact={layout.compact} text={shown} firstBlock={item.data.blockIndex === 0} listContinuation={item.data.listContinuation}><MarkdownView text={shown} tokens={tokens} variant={preferences.markdownVariant}
+        compact={layout.compact} firstBlock={item.data.blockIndex === 0} onRevealPath={onRevealPath}
+        listContinuation={item.data.listContinuation}
+        probeId={`assistant:${timestamp.getTime()}:${item.data.blockIndex}`} /></InlineReplyBlock>
+    </SelectionTranslationScope>
     <DetailsHostSlot agentId={agentId} itemKey={hostSlotKey} tokens={tokens} compact={layout.compact} />
   </View>;
 }
@@ -550,9 +615,11 @@ function LiveAssistantMessageRenderer({
   theme,
   layout,
   timestamp,
-}: PluginTimelineItemProps<LiveAssistantPayload>) {
+  inline,
+}: PluginTimelineItemProps<LiveAssistantPayload> & { inline?: InlineTranslationState }) {
   const messageText = item.data.messageText ?? item.data.text;
   const streaming = item.data.phase === "streaming";
+  const translated = inline?.active && inline.view?.status === "done" ? inline.view.result.translation : null;
   const probe = probeCard(
     "assistant",
     textItemKey("assistant", item.data.text),
@@ -580,7 +647,7 @@ function LiveAssistantMessageRenderer({
   // the model's words, so they are drawn as a card, not as prose.
   const envelope = useMemo(() => parseSystemEnvelope(item.data.text), [item.data.text]);
   const reveal = ASSISTANT_REVEAL[layout.platform === "web" ? "web" : "native"];
-  // Where the reply is not paced, it bypasses the host's hook: that hook shows
+  // Where the reply is not paced, it bypasses the reveal hook: that hook shows
   // a longer text one commit late (it settles in a passive effect), and Paseo's
   // web list follows the bottom in the commit that brings the stream data, so a
   // reply growing a commit later was painted pushed down for a frame, then
@@ -591,12 +658,13 @@ function LiveAssistantMessageRenderer({
   // A path in the prose reveals like a path in a tool card: one daemon RPC,
   // relative to the agent's directory.
   const revealPath = useRpc(revealPathRpc);
+  const toast = useToast();
   const cwd = useAgent(agentId, (agent) => agent.cwd);
   const handleRevealPath = useCallback(
     (path: string) => {
-      void revealPath({ cwd: cwd ?? "", path }).catch(() => {});
+      revealWithSetting(revealPath, toast, cwd ?? "", path);
     },
-    [cwd, revealPath],
+    [cwd, revealPath, toast],
   );
 
   return (
@@ -613,17 +681,19 @@ function LiveAssistantMessageRenderer({
       {envelope ? (
         <SystemCard envelope={envelope} tokens={tokens} compact={layout.compact} />
       ) : (
-        <MarkdownView
-          text={revealed}
-          firstBlock={item.data.blockIndex === undefined || item.data.blockIndex === 0}
-          listContinuation={item.data.listContinuation}
-          tokens={tokens}
-          variant={preferences.markdownVariant}
-          compact={layout.compact}
-          streaming={streaming}
-          onRevealPath={handleRevealPath}
-          probeId={`assistant:${timestamp.getTime()}`}
-        />
+        <SelectionTranslationScope agentId={agentId} kind="assistant_message" streaming={streaming}>
+          {inline ? <InlineReplyBlock state={inline} theme={theme} tokens={tokens} compact={layout.compact} text={translated ?? revealed} firstBlock={item.data.blockIndex === undefined || item.data.blockIndex === 0} listContinuation={item.data.listContinuation}><MarkdownView
+            text={translated ?? revealed}
+            firstBlock={item.data.blockIndex === undefined || item.data.blockIndex === 0}
+            listContinuation={item.data.listContinuation}
+            tokens={tokens}
+            variant={preferences.markdownVariant}
+            compact={layout.compact}
+            streaming={streaming}
+            onRevealPath={handleRevealPath}
+            probeId={`assistant:${timestamp.getTime()}`}
+          /></InlineReplyBlock> : null}
+        </SelectionTranslationScope>
       )}
       {/* A streaming row only observes completion usage; the visible footer
           still belongs exclusively to the final reply of a completed turn. */}
@@ -632,6 +702,7 @@ function LiveAssistantMessageRenderer({
           agentId={agentId}
           text={messageText}
           at={timestamp}
+          theme={theme}
           tokens={tokens}
           compact={layout.compact}
           streaming={streaming}
@@ -658,6 +729,7 @@ const TurnFooter = memo(function TurnFooter({
   agentId,
   text,
   at,
+  theme,
   tokens,
   compact,
   streaming,
@@ -665,6 +737,7 @@ const TurnFooter = memo(function TurnFooter({
   agentId: string;
   text: string;
   at: Date;
+  theme: PluginTheme;
   tokens: ReturnType<typeof useThemeTokens>;
   compact: boolean;
   streaming: boolean;
@@ -673,14 +746,15 @@ const TurnFooter = memo(function TurnFooter({
   const paseo = usePaseo();
   const timing = useTurnFooter(paseo, agentId, at.getTime(), text, running, streaming);
   if (!timing) return null;
-  return <CompletedReplyFooter agentId={agentId} text={text} at={new Date(timing.completedAt)} tokens={tokens}
+  return <CompletedReplyFooter agentId={agentId} text={text} theme={theme} at={new Date(timing.completedAt)} tokens={tokens}
     compact={compact} durationMs={timing.durationMs} startedAt={timing.startedAt} usage={timing.usage} />;
 });
 
-function CompletedReplyFooter({ agentId, text, at, tokens, compact, durationMs, startedAt, usage }: {
+function CompletedReplyFooter({ agentId, text, at, theme, tokens, compact, durationMs, startedAt, usage }: {
   agentId: string;
   text: string;
   at: Date;
+  theme: PluginTheme;
   tokens: ReturnType<typeof useThemeTokens>;
   compact: boolean;
   durationMs: number | null;
@@ -693,7 +767,7 @@ function CompletedReplyFooter({ agentId, text, at, tokens, compact, durationMs, 
   const cwd = useAgent(agentId, (agent) => agent.cwd);
   const paseo = usePaseo();
   const model = useFooterModel(paseo, agentName, modelId, thinkingOptionId, cwd);
-  return <AssistantFooter text={text} at={at} agentName={agentName} modelId={modelId} modelName={model.modelName}
+  return <AssistantFooter translation={{ agentId, theme }} text={text} at={at} agentName={agentName} modelId={modelId} modelName={model.modelName}
     thinkingLabel={model.thinkingLabel}
     durationMs={durationMs} startedAt={startedAt} usage={usage} tokens={tokens} compact={compact} />;
 }

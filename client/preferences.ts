@@ -14,6 +14,7 @@ import {
   clampHoverDelay,
   preferencesSchema,
   type StoredPreferences,
+  type FileOpenApp,
 } from "../shared/preferences-settings";
 import type { SettingsLanguagePreference } from "./i18n/settings-strings";
 
@@ -78,6 +79,7 @@ export type MarkdownVariantPreference = "document" | "compact" | "terminal";
  */
 export type MonoFontPreference = "host" | "custom";
 /** Tool cards start collapsed; `expand-failed` opens failed ones by default. */
+export type TimelineLevel = "simple" | "standard" | "detailed";
 export type ToolDetailPreference = "collapsed" | "expand-failed";
 export type PathDisplayPreference = "relative" | "absolute";
 export type RowLabelStylePreference = "icon" | "label" | "both";
@@ -106,6 +108,7 @@ export interface EnhancerPreferences {
   blockFontSize: number;
   toolDetail: ToolDetailPreference;
   pathDisplay: PathDisplayPreference;
+  fileOpenApp: FileOpenApp;
   /** Show desktop hover previews for collapsed rows and file paths. */
   hoverPreview: boolean;
   /** Seconds the pointer rests before a desktop hover preview opens (0-10, tenths). */
@@ -128,6 +131,7 @@ export interface EnhancerPreferences {
   previewStripes: boolean;
   /** Draw the chat with the plugin. Off leaves every chat row to Paseo; the Tasks board does not depend on it. */
   chatEnabled: boolean;
+  timelineLevel: TimelineLevel;
   /**
    * Paseo maps a stream item to the plugin timeline item before any transformer
    * runs, and that mapping carries only the text. Pasted images therefore never
@@ -150,6 +154,8 @@ export interface EnhancerPreferences {
    * subset rather than a superset.
    */
   assistantMarkdown: boolean;
+  /** Leave replies containing UI fences to another renderer. */
+  liveUiReplies: boolean;
   /** Which look the markdown renderer uses. */
   markdownVariant: MarkdownVariantPreference;
   /**
@@ -222,6 +228,7 @@ export const DEFAULT_PREFERENCES: Readonly<EnhancerPreferences> = {
   blockFontSize: BLOCK_FONT_SIZE_DEFAULT,
   toolDetail: "collapsed",
   pathDisplay: "relative",
+  fileOpenApp: "system",
   hoverPreview: true,
   hoverDelaySeconds: HOVER_DELAY_DEFAULT,
   previewWrap: true,
@@ -230,9 +237,11 @@ export const DEFAULT_PREFERENCES: Readonly<EnhancerPreferences> = {
   previewLineNumbers: true,
   previewStripes: true,
   chatEnabled: true,
+  timelineLevel: "standard",
   enhancedUserBubble: false,
   selectionActions: true,
   assistantMarkdown: true,
+  liveUiReplies: false,
   markdownVariant: "document",
   rowLabelStyle: "icon",
   compactRowSpacing: true,

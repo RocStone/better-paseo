@@ -8,7 +8,7 @@ vi.mock("react-native", async () => {
   return import("./helpers/rn-mock");
 });
 const clipboard = vi.hoisted(() => ({ copyText: vi.fn(async () => {}), show: vi.fn(), error: vi.fn() }));
-vi.mock("@getpaseo/plugin/client/react-native", async () => {
+vi.mock("@getpaseo/plugin/client/ui", async () => {
   const rn = await import("./helpers/rn-mock");
   return {
     Icon: rn.View,
@@ -34,6 +34,7 @@ vi.mock("../../client/web", () => ({
     return () => {};
   },
   openPreviewLayer: () => () => {},
+  pinTooltipLayer: () => () => {},
 }));
 import { buildThemeTokens } from "../../client/components/theme-tokens";
 import { PathText } from "../../client/ui/path-text";
@@ -57,6 +58,16 @@ beforeEach(() => {
 });
 afterEach(() => {
   vi.useRealTimers();
+});
+
+describe("path action accessibility", () => {
+  it("announces opening or revealing when the path is clickable", () => {
+    let renderer!: ReturnType<typeof TestRenderer.create>;
+    act(() => { renderer = TestRenderer.create(React.createElement(PathText, { path: "/tmp/project/a.ts", tokens, onReveal() {} })); });
+    const path = renderer.root.find((node) => (node.type as unknown) === "Pressable" && node.props.accessibilityLabel === "/tmp/project/a.ts");
+    expect(path.props.accessibilityHint).toBe("Opens or reveals the path");
+    act(() => renderer.unmount());
+  });
 });
 
 describe("a path's desktop preview", () => {

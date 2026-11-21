@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useMemo, useRef } from "react";
+import React, { createContext, useCallback, useContext, useMemo, useRef } from "react";
 import { Platform, View } from "react-native";
 import type { ExtendedThemeTokens } from "../theme-tokens";
 import { selectionSurface } from "../selection-actions";
@@ -13,6 +13,7 @@ import { MdBlock } from "./render/md-block";
 import { buildStyles, variantMetrics, type MarkdownVariant } from "./render/styles";
 import { useZoomedTokens } from "../../ui/text-zoom";
 import { dismissBlockSelection } from "./render/block-selection";
+import { SelectionTranslationContext, bindSelectionScopeElement, selectionScopeDataSet } from "../../translation/selection";
 
 export { MARKDOWN_VARIANTS, type MarkdownVariant } from "./render/styles";
 
@@ -45,6 +46,8 @@ export interface MarkdownViewProps {
   compact?: boolean;
   /** One step quieter: muted text a size down (a thought, not the answer). */
   quiet?: boolean;
+  /** Whether native double-tap block selection is enabled. */
+  blockSelection?: boolean;
   /**
    * Metrics base instead of the reply's content size. Tool and thought prose
    * pass `blockProseBase`, which equals the content size at the default block
@@ -92,6 +95,7 @@ export function MarkdownView({
   collapseCode = false,
   compact = false,
   quiet = false,
+  blockSelection = true,
   size,
   onRevealPath,
   probeId,
@@ -152,10 +156,11 @@ export function MarkdownView({
       variant,
       collapseCode,
       plainProse,
+      blockSelection,
       onRevealPath,
       renderText,
     }),
-    [styles, tokens, metrics, variant, collapseCode, plainProse, onRevealPath, renderText],
+    [styles, tokens, metrics, variant, collapseCode, plainProse, blockSelection, onRevealPath, renderText],
   );
 
   // A streamed chunk changes the tail and leaves every block before it as it
@@ -185,12 +190,27 @@ export function MarkdownView({
     return next.map((block) => block.node);
   }, [displayBlocks, streaming, context, firstBlock]);
 
+  // On web the selection bar is DOM and reads the conversation a selection
+  // belongs to from the surface it was made in.
+  // The element itself carries the scope and its translator (React Native Web
+  // hands the DOM node to the ref); the attributes only mark it for `closest`.
+  const scope = useContext(SelectionTranslationContext);
+  const web = Platform.OS === "web";
+  const scopeData = web ? selectionScopeDataSet(scope) : null;
+  const surface = metrics.mono ? surfaceProps(selectionSurface, codeSurface) : selectionSurface;
+  const bindScope = useCallback((node: View | null) => {
+    if (!node || !scope) return;
+    bindSelectionScopeElement(node, scope);
+    return () => bindSelectionScopeElement(node, null);
+  }, [scope]);
+
   return (
     // The terminal variant sets the whole body in the mono face, so the whole
     // reply is a code surface the host's UI font rule must skip.
     <View
-      onTouchStart={dismissBlockSelection}
-      {...(metrics.mono ? surfaceProps(selectionSurface, codeSurface) : selectionSurface)}
+      ref={web && scope ? bindScope : undefined}
+      onTouchStart={blockSelection ? dismissBlockSelection : undefined}
+      {...(scopeData ? surfaceProps(surface, { dataSet: scopeData } as never) : surface)}
       style={[styles.root, !firstBlock && { paddingTop: listContinuation ? metrics.itemGap : metrics.blockGap }]}
     >
       {nodes}

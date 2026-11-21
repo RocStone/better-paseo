@@ -4,6 +4,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import "./helpers/quiet-renderer";
 
 vi.hoisted(() => { (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true; });
+const translateRpc = vi.hoisted(() => vi.fn());
 const modalRenders = vi.hoisted(() => ({ count: 0 }));
 const keyboard = vi.hoisted(() => ({ hide: undefined as (() => void) | undefined, show: undefined as (() => void) | undefined, blur: vi.fn(), scrollToEnd: vi.fn() }));
 vi.mock("react-native", async () => {
@@ -14,7 +15,12 @@ vi.mock("react-native", async () => {
     return { remove: () => { keyboard[key] = undefined; } };
   } } };
 });
-vi.mock("@getpaseo/plugin/client/react-native", async () => {
+vi.mock("@getpaseo/plugin/client", () => ({
+  useSettings: () => ({ status: "loading" }),
+  usePaseo: () => undefined,
+  useRpc: () => translateRpc,
+}));
+vi.mock("@getpaseo/plugin/client/ui", async () => {
   const rn = await import("./helpers/rn-mock");
   const Input = React.forwardRef((_props: Record<string, unknown>, ref) => {
     React.useImperativeHandle(ref, () => ({ blur: keyboard.blur }));
@@ -24,7 +30,7 @@ vi.mock("@getpaseo/plugin/client/react-native", async () => {
     React.useImperativeHandle(ref, () => ({ scrollToEnd: keyboard.scrollToEnd }));
     return React.createElement(rn.ScrollView, props);
   });
-  return { TextInput: Input, ScrollView: Scroll,
+  return { TextInput: Input, ScrollView: Scroll, useToast: () => ({ show: vi.fn(), error: vi.fn() }), copyText: vi.fn(async () => {}),
     Icon: (props: object) => React.createElement("Icon", props),
     Modal: Object.assign((props: { children?: React.ReactNode }) => React.createElement("HostModal", props, props.children),
       { Content: (props: { children?: React.ReactNode }) => { modalRenders.count++; return React.createElement("ModalContent", props, props.children); } }) };
@@ -36,6 +42,9 @@ import { permissionButtons, respondToPermission } from "../../client/tasks/actio
 import { previewSampleCards } from "../../client/tasks/sample-cards";
 import { createFakePaseo } from "./helpers/fake-paseo";
 import type { TaskCard } from "../../client/tasks/model";
+import { InlineTranslation } from "../../client/translation/inline";
+import { SelectionTranslationScope } from "../../client/translation/ui";
+import { DEFAULT_TIMELINE_TRANSLATION_SETTINGS, publishTranslationSettings, resetTranslationSettingsStoreForTests } from "../../client/translation/settings-store";
 
 const theme = { colors: { surface0: "#fff", surface1: "#eee", surface2: "#ddd", border: "#ccc", foreground: "#111", foregroundMuted: "#666", accent: "#36c", accentForeground: "#fff", statusWarning: "#960", statusDanger: "#c33", statusSuccess: "#393" } };
 const question = { header: "Original header", question: "Full question\nSecond line", options: [{ label: "Keep, unchanged", description: "Full explanation", preview: "Preview\nSecond line" }, { label: "Reject" }], multiSelect: false, isOther: true };
@@ -92,6 +101,17 @@ describe("task question dialog", () => {
     await act(async () => { store.open(current); tree = TestRenderer.create(render()); });
     return { store, fake, update: async (next: TaskCard) => { current = next; await act(async () => tree!.update(render())); } };
   }
+  it("shows a filled check for selected single choices and keeps multi choices square", async () => {
+    await mount(card({ questions: [question, { ...question, header: "Multi", multiSelect: true }] }));
+    expect(host("task-question-option-0-0").findAllByType("Icon" as never).map((node) => node.props.name)).toContain("Circle");
+    await act(async () => host("task-question-option-0-0").props.onPress());
+    const mark = host("task-question-option-0-0").findByProps({ testID: "question-selected-mark" });
+    expect(mark.props.style.backgroundColor).toBe(theme.colors.accent);
+    expect(mark.findByType("Icon" as never).props).toMatchObject({ name: "Check", color: theme.colors.accentForeground });
+    await act(async () => host("task-question-tab-1").props.onPress());
+    await act(async () => host("task-question-option-1-0").props.onPress());
+    expect(host("task-question-option-1-0").findAllByType("Icon" as never).map((node) => node.props.name)).toContain("SquareCheck");
+  });
   it("separates card navigation from question tabs and preserves each card draft", async () => {
     const first = card({ questions: [question, { ...question, header: "Second" }] });
     const second = { ...card(), id: "another", title: "Another task", permission: { ...card().permission!, requestId: "another-request" } };
@@ -360,5 +380,115 @@ describe("inline task questions", () => {
     await act(async () => tree!.update(render(next)));
     expect(host("task-question-submit").props.disabled).toBe(true);
     expect(JSON.stringify(tree!.toJSON())).not.toContain("offline");
+  });
+});
+
+describe("agent note above the question", () => {
+  const plan = "需要处理两项：公共 DNS 的引导路径。\n\n建议按以下方案修改：\n- `clash.yaml`";
+  const asked = (): TaskCard => ({ ...card(), provider: "codex",
+    permission: { ...card().permission!, requestId: "permission-call_a1", name: "request_user_input_async", callId: "call_a1" } });
+  const rows = [
+    { timestamp: "2026-11-13T08:50:40Z", item: { type: "user_message", text: "优化下审查发现的问题" } },
+    { timestamp: "2026-11-13T08:51:57Z", item: { type: "assistant_message", text: `\n\n---\n\n${plan}` } },
+    { timestamp: "2026-11-13T08:51:59Z", item: { type: "tool_call", name: "request_user_input_async", callId: "call_a1" } },
+    { timestamp: "2026-11-13T08:52:09Z", item: { type: "assistant_message", text: "等待方案确认。" } },
+  ];
+  function timeline(pages: unknown[]) {
+    const refetch = vi.fn(async () => {
+      const next = pages.shift();
+      if (next instanceof Error) throw next;
+      return next;
+    });
+    return { refetch, paseo: { agents: { ref: () => ({ timeline: { refetch } }) } } };
+  }
+  const shown = () => JSON.stringify(tree!.toJSON());
+  async function open(paseo: unknown) {
+    const store = createQuestionDialogStore();
+    const current = asked();
+    await act(async () => { store.open(current); tree = TestRenderer.create(<TaskQuestionDialog store={store} paseo={paseo as never} cardById={() => current} submit={vi.fn(async () => {})} theme={theme} language="zh" />); });
+  }
+
+  it("shows what the agent wrote before an async question, not the reply after it", async () => {
+    const { refetch, paseo } = timeline([{ error: null, entries: rows }]);
+    const store = createQuestionDialogStore();
+    const current = asked();
+    await act(async () => { store.open(current); tree = TestRenderer.create(<TaskQuestionDialog store={store} paseo={paseo as never} cardById={() => current} submit={vi.fn(async () => {})} theme={theme} language="zh" />); });
+    await act(async () => { await vi.waitFor(() => expect(refetch).toHaveBeenCalledOnce()); });
+    expect(host("task-question-note")).toBeDefined();
+    expect(shown()).toContain("Agent 说明");
+    expect(shown()).toContain("需要处理两项");
+    expect(shown()).not.toContain("等待方案确认");
+    expect(shown()).not.toContain("---");
+    const translate = tree!.root.findByType(InlineTranslation);
+    expect(translate.props).toMatchObject({ agentId: current.id, kind: "assistant_message" });
+    expect(translate.props.text).toContain("需要处理两项");
+    const translateButton = host("task-question-note-translate");
+    const copyButton = host("task-question-note-copy");
+    await act(async () => { translateButton.props.onHoverIn(); copyButton.props.onHoverIn(); });
+    expect(host("task-question-note-translate-fill").props.style).toEqual(host("task-question-note-copy-fill").props.style);
+    expect(host("task-question-note-copy-fill").props.style).toMatchObject({ width: 24, height: 24, borderRadius: 6 });
+    expect(copyButton.props.style).toEqual(translateButton.props.style);
+    expect(host("task-question-note-actions").props.style).toMatchObject({ flexDirection: "row", alignItems: "center" });
+    expect(copyButton.props.style).toMatchObject({ width: 28, height: 28 });
+    expect(tree!.root.findByType(SelectionTranslationScope).props).toMatchObject({ agentId: current.id, kind: "assistant_message" });
+    // The note sits between the task and the question.
+    const order = ["task-question-context", "task-question-note", "task-question-field"].map((id) => shown().indexOf(`"testID":"${id}"`));
+    expect(order[0]).toBeGreaterThanOrEqual(0);
+    expect(order).toEqual([...order].sort((a, b) => a - b));
+  });
+
+  it("translates the note in place and restores the original without disturbing the answer", async () => {
+    translateRpc.mockReset().mockResolvedValue({ state: "done", translation: "Translated note", targetLanguageCode: "zh-CN", provider: "claude", model: "model", thinkingMode: "disabled", thinkingOptionId: "off" });
+    try {
+      const { paseo } = timeline([{ error: null, entries: rows }]);
+      const store = createQuestionDialogStore();
+      const current = asked();
+      await act(async () => { store.open(current); tree = TestRenderer.create(<TaskQuestionDialog store={store} paseo={paseo as never} cardById={() => current} submit={vi.fn(async () => {})} theme={theme} language="zh" />); });
+      await act(async () => { await publishTranslationSettings({ ...DEFAULT_TIMELINE_TRANSLATION_SETTINGS, enabled: true, customModel: true, provider: "claude", model: "model" }, "question-note"); });
+      await act(async () => host("task-question-option-0-0").props.onPress());
+      await act(async () => host("task-question-note-translate").props.onPress({ stopPropagation() {} }));
+      await vi.waitFor(() => expect(shown()).toContain("Translated note"));
+      expect(shown()).not.toContain("需要处理两项");
+      expect(tree!.root.findAllByType("HostModal" as never)).toHaveLength(1);
+      expect(store.get()?.draft.selections[0]).toEqual([0]);
+      await act(async () => host("task-question-note-translate").props.onPress({ stopPropagation() {} }));
+      expect(shown()).toContain("需要处理两项");
+      expect(shown()).not.toContain("Translated note");
+      expect(translateRpc).toHaveBeenCalledOnce();
+    } finally {
+      await act(async () => resetTranslationSettingsStoreForTests());
+    }
+  });
+
+  it("shows placeholder lines while reading, nothing when the agent wrote nothing, and a retry after a failure", async () => {
+    let release!: (page: unknown) => void;
+    const slow = timeline([]);
+    slow.refetch.mockImplementationOnce(() => new Promise((resolve) => { release = resolve; }) as never);
+    await open(slow.paseo);
+    expect(host("task-question-note-loading")).toBeDefined();
+    await act(async () => { release({ error: null, entries: rows.slice(0, 1).concat(rows.slice(2, 3)) }); });
+    expect(tree!.root.findAll((node) => typeof node.type === "string" && String(node.props.testID ?? "").startsWith("task-question-note"))).toHaveLength(0);
+    await act(async () => tree!.unmount());
+
+    const failing = timeline([new Error("offline"), { error: null, entries: rows }]);
+    await open(failing.paseo);
+    expect(host("task-question-note-error")).toBeDefined();
+    expect(shown()).toContain("没能读取 Agent 说明");
+    await act(async () => { host("task-question-note-retry").props.onPress(); });
+    expect(failing.refetch).toHaveBeenCalledTimes(2);
+    expect(shown()).toContain("需要处理两项");
+  });
+
+  it("leaves the note out without a timeline, and in the details shows only the note it is given", async () => {
+    await open(undefined);
+    expect(tree!.root.findAll((node) => node.props.testID === "task-question-note")).toHaveLength(0);
+    await act(async () => tree!.unmount());
+    const source = createQuestionDialogStore();
+    const current = asked();
+    const read = { context: { state: "ready" as const, text: plan, timestamp: "2026-11-13T08:51:57Z" }, retry: vi.fn() };
+    await act(async () => { tree = TestRenderer.create(<TaskInlineQuestions card={current} source={source} submit={vi.fn(async () => {})} theme={theme} language="zh" context={read} />); });
+    expect(shown()).toContain("需要处理两项");
+    await act(async () => tree!.update(<TaskInlineQuestions card={current} source={source} submit={vi.fn(async () => {})} theme={theme} language="zh" context={null} />));
+    expect(tree!.root.findAll((node) => node.props.testID === "task-question-note")).toHaveLength(0);
   });
 });

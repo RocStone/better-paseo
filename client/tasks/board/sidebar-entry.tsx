@@ -10,7 +10,7 @@ import { useTaskCounts, type CountScope } from "../data";
 import { firstPromptStoreFor } from "../data/first-prompt";
 import { subagentFirstPrompts } from "../data/subagent-timeline";
 import { conversationSearchFor } from "../data/search-conversations";
-import { useDeviceTasksPreferences } from "../device-preferences";
+import { useDeviceSettingsReport, useDeviceTasksPreferences } from "../device-preferences";
 import { LANE_STATUS, type TaskCard } from "../model";
 import { HOST_FONT, TaskText as Text, TasksTypography } from "../typography";
 import { useTasksLanguage } from "../i18n";
@@ -43,6 +43,7 @@ const SCREEN_ID = "tasks";
  * item only in providers, so a null item leaves no gap.
  */
 export function TasksSidebarEntry(props: PluginSidebarItemProps & { placeholder?: ReactNode }) {
+  useDeviceSettingsReport();
   const settings = useTasksSettings(props.host.id);
   const language = useTasksLanguage();
   if (!settings) return props.placeholder ?? null;
@@ -168,7 +169,7 @@ function CountedTasksRow(props: PluginSidebarItemProps & { label: string; mode: 
         </View>
       </TasksTypography>
     ) : undefined;
-  return <><TasksRow {...props} trailing={trailing} /><TaskQuestionDialog store={dialog} cardById={(id) => latestCards.current.find((card) => card.id === id)} submit={submit} cards={cards} compact={props.layout.compact} theme={props.theme} language={language} onOpen={(id) => {
+  return <><TasksRow {...props} trailing={trailing} /><TaskQuestionDialog store={dialog} paseo={paseo} cardById={(id) => latestCards.current.find((card) => card.id === id)} submit={submit} cards={cards} compact={props.layout.compact} theme={props.theme} language={language} onOpen={(id) => {
     const card = latestCards.current.find((item) => item.id === id);
     const token = requestBoardOpen(props.host.id, card?.subagent ? card.parent?.id ?? id : id);
     dialog.close();

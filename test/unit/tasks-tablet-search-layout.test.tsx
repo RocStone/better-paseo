@@ -3,12 +3,13 @@ import TestRenderer, { act, type ReactTestInstance } from "react-test-renderer";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import "./helpers/quiet-renderer";
 vi.mock("react-native", () => import("./helpers/rn-mock"));
-vi.mock("@getpaseo/plugin/client/react-native", async () => {
+vi.mock("@getpaseo/plugin/client/ui", async () => {
   const rn = await import("./helpers/rn-mock");
   return { Icon: (props: Record<string, unknown>) => React.createElement("Icon", props), TextInput: rn.TextInput, ScrollView: rn.ScrollView };
 });
 const motion = vi.hoisted(() => ({ reduced: true }));
 vi.mock("../../client/ui/use-reduced-motion", () => ({ useReducedMotion: () => motion.reduced, getReducedMotion: () => motion.reduced }));
+vi.mock("../../client/tasks/board/update-indicator", () => ({ useUpdateIndicator: () => false }));
 import { AccessibilityInfo, Animated, View } from "react-native";
 import { SearchQueryChip } from "../../client/tasks/board/filter-bar";
 import { TabletToolbar } from "../../client/tasks/board/tablet-toolbar";

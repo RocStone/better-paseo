@@ -1,5 +1,5 @@
 import type { TasksLanguage } from "../i18n";
-import type { StatusKind, WorkspaceKind } from "../model";
+import type { PermissionKind, StatusKind, TaskPermission, WorkspaceKind } from "../model";
 
 /** The cards' own words; Chinese follows the prototype. */
 const en = {
@@ -11,6 +11,7 @@ const en = {
     unsupported: "This request cannot be answered reliably through the host form protocol. No answer will be submitted here.",
     codexComma: "Codex synchronous multi-select answers cannot contain commas: the host would split your custom answer.",
     failed: (error: string) => `Could not send answer: ${error}`,
+    context: "Agent note", contextLoading: "Reading the agent's note", contextError: "Couldn't read the agent's note", contextRetry: "Retry", copyContext: "Copy agent note",
   },
   searchHits: {
     fields: { title: "Title", prompt: "First message", conversation: "Conversation", pr: "PR", label: "Label", branch: "Branch", folder: "Folder", project: "Project", workspace: "Workspace", path: "Path", model: "Model ID", id: "Task ID" },
@@ -29,6 +30,10 @@ const en = {
   },
   openInWorkspace: "Open in workspace",
   awaitingAnswer: "Awaiting answer",
+  awaitingApproval: "Awaiting approval",
+  awaitingReview: "Awaiting review",
+  planRequest: "Plan",
+  viewPlan: "View plan",
   openTab: "Open",
   stop: "Stop",
   stopChildren: "Stop subtasks",
@@ -47,6 +52,8 @@ const en = {
   undoTitle: "Restore previous title",
   generateTitle: "Generate title",
   dismissTitleError: "Dismiss title update message",
+  dismissTaskError: "Dismiss error message",
+  dismissTaskErrorFailed: "Could not dismiss error message",
   autoTitleFailed: (error: string) => `Title update: ${error}`,
   titleLabel: "Title",
   saveTitle: "Save",
@@ -273,6 +280,7 @@ const zh: CardStrings = {
     unsupported: "宿主表单协议无法可靠表达此请求，当前弹窗不会提交答案。",
     codexComma: "Codex 同步多选的自定义回答不能包含逗号，宿主会将回答拆分。",
     failed: (error) => `发送回答失败：${error}`,
+    context: "Agent 说明", contextLoading: "正在读取 Agent 说明", contextError: "没能读取 Agent 说明", contextRetry: "重试", copyContext: "复制 Agent 说明",
   },
   searchHits: {
     fields: { title: "标题", prompt: "首条消息", conversation: "会话内容", pr: "PR", label: "标签", branch: "分支", folder: "文件夹", project: "项目", workspace: "工作区", path: "路径", model: "模型 ID", id: "任务 ID" },
@@ -291,6 +299,10 @@ const zh: CardStrings = {
   },
   openInWorkspace: "在工作区中打开",
   awaitingAnswer: "待回答",
+  awaitingApproval: "待授权",
+  awaitingReview: "待确认",
+  planRequest: "计划",
+  viewPlan: "查看计划",
   openTab: "打开",
   stop: "停止",
   stopChildren: "停止子任务",
@@ -309,6 +321,8 @@ const zh: CardStrings = {
   undoTitle: "恢复原标题",
   generateTitle: "生成标题",
   dismissTitleError: "关闭标题更新提示",
+  dismissTaskError: "关闭错误提示",
+  dismissTaskErrorFailed: "关闭错误提示失败",
   autoTitleFailed: (error) => `标题更新：${error}`,
   titleLabel: "标题",
   saveTitle: "保存",
@@ -526,4 +540,25 @@ export function subtaskSummary(children: readonly { status: StatusKind }[], lang
     .map((kind) => `${counts.get(kind)} ${strings.status[kind]}`)
     .join(" · ");
   return strings.subtasks(children.length, parts);
+}
+
+/**
+ * What a waiting request's divider says it waits for: a question, or an
+ * unknown request answered in the tab, waits for an answer; a plan for its
+ * review (Implement or Reject); a tool or a mode change for approval.
+ */
+export function requestDividerLabel(kind: PermissionKind, strings: CardStrings): string {
+  if (kind === "question" || kind === "other") return strings.awaitingAnswer;
+  if (kind === "plan") return strings.awaitingReview;
+  return strings.awaitingApproval;
+}
+
+/**
+ * A request's title as the card and the details show it. A plan arrives
+ * named after its tool (Claude's "ExitPlanMode", Codex's "Plan"), which says
+ * nothing in either language, so it reads as the plan it is.
+ */
+export function requestTitle(permission: Pick<TaskPermission, "kind" | "title">, strings: CardStrings): string {
+  if (permission.kind === "plan" && (permission.title === "ExitPlanMode" || permission.title === "Plan")) return strings.planRequest;
+  return permission.title;
 }

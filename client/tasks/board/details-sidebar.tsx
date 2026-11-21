@@ -1,20 +1,25 @@
+import { selectionWithoutComposer } from "../../components/selection-actions";
+import { PreferenceSyncSlot } from "../../state/preference-sync-slot";
 import React, { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { Platform, Pressable, ScrollView, StyleSheet, View } from "react-native";
 import type { PluginTheme } from "@getpaseo/plugin";
-import { Icon, TextInput } from "@getpaseo/plugin/client/react-native";
+import { Icon, TextInput } from "@getpaseo/plugin/client/ui";
 import { tipProps } from "../cards/card-hints";
 import { TaskText as Text, HOST_FONT as F, HOST_LINE, useTasksFontScale, taskControlHeight } from "../typography";
 import { useHover } from "../../ui/use-hover";
 import { useReducedMotion } from "../../ui/use-reduced-motion";
 import { liftStyle, scaleStyle, surfaceLift } from "../cards/surface-lift";
 import { usePressCue } from "../cards/action-pressable";
-import { BrandMark, DETAIL_CARD, DetailActionBar, DetailCard, detailGutter, detailScrollProps, outsideIndicator, ProjectIcon, StatusIcon, TagMark, TaskDetailCards, taskTokens, tildePath, type DetailNotice, type TaskTokens } from "../cards";
-import { LANE_STATUS, remoteCard, turnRunning, type LaneId, type TaskCard } from "../model";
+import { hoverFill } from "../hover-fill";
+import { HoverControl } from "../hover-control";
+import { BrandMark, DETAIL_CARD, DetailActionBar, DetailCard, detailGutter, detailScrollProps, outsideIndicator, ProjectIcon, requestInSection, StatusIcon, TagMark, TaskDetailCards, taskTokens, tildePath, type DetailNotice, type TaskTokens } from "../cards";
+import { LANE_STATUS, remoteCard, translationAgentOf, turnRunning, type LaneId, type TaskCard } from "../model";
 import { activeStopChildren } from "../actions/stop-targets";
 import { SheetFoot, SheetScrollRoom } from "../sheet-motion";
 import { useFirstPrompt } from "../data/first-prompt";
 import { lastHumanMessageVersion, useLastHumanMessage } from "../data/last-human-message";
 import { lastMessageVersion, useLastMessage } from "../data/last-message";
+import { detailsShowNote, useQuestionContext } from "../data/question-context";
 import { useSessionTokens } from "../data/session-tokens";
 import { useSubagentTimeline } from "../data/subagent-timeline";
 import { FILTER_GROUP_ORDER, FILTER_ICONS, buildFilterOptions, clearedParams, filterSummary, shownFilterOptions, toggleProject, type FilterOption, type ShownFilterOptions } from "./filter-options";
@@ -157,7 +162,7 @@ function DetailsSidebarView(props: DetailsSidebarProps) {
       )}
     </>
   );
-  const sheetActions = !tabs && card && props.onSheetClose && !(card.permission?.kind === "question" && board.buttonsFor(card).length > 0) ? <SheetFoot><DetailActionBar {...detailActions(board, card)} theme={theme} sidebar onClose={props.onSheetClose} /></SheetFoot> : null;
+  const sheetActions = !tabs && card && props.onSheetClose && !requestInSection(card, board.buttonsFor(card)) ? <SheetFoot><DetailActionBar {...detailActions(board, card)} theme={theme} sidebar onClose={props.onSheetClose} /></SheetFoot> : null;
   // Whether the column's size can change what it draws. A touch card in tabs
   // (the tablet's sheet and floating panel) ignores it: there the layout that
   // follows a card's first frame only drew the whole card again, the same,
@@ -182,7 +187,7 @@ function DetailsSidebarView(props: DetailsSidebarProps) {
   if (short) {
     const parked = outsideIndicator(props.scrollAll === true && props.touch === true);
     return (
-      <View style={{ flex: 1, minHeight: 0 }} onLayout={onLayout} testID={props.testID ?? "details-sidebar"}>
+      <View {...selectionWithoutComposer} style={{ flex: 1, minHeight: 0 }} onLayout={onLayout} testID={props.testID ?? "details-sidebar"}>
         {/* Keyed by the card: a jump to the parent or back starts at the top. */}
         <SheetScrollRoom>
           <ScrollView key={selection.id ?? ""} style={{ flex: 1, marginRight: parked?.marginRight ?? 0 }} contentContainerStyle={{ gap: DETAIL_CARD.gap, paddingRight: parked?.paddingRight ?? 0 }} {...detailScrollProps("column")} testID="details-sidebar-scroll">
@@ -194,7 +199,7 @@ function DetailsSidebarView(props: DetailsSidebarProps) {
     );
   }
   return (
-    <View style={{ flex: 1, minHeight: 0, gap: DETAIL_CARD.gap }} onLayout={onLayout} testID={props.testID ?? "details-sidebar"}>
+    <View {...selectionWithoutComposer} style={{ flex: 1, minHeight: 0, gap: DETAIL_CARD.gap }} onLayout={onLayout} testID={props.testID ?? "details-sidebar"}>
       {/* A tabbed card gives up the room inside, above its own foot. */}
       {columns ? <SheetScrollRoom>{content}</SheetScrollRoom> : content}
       {sheetActions}
@@ -242,10 +247,12 @@ function SidebarDetailsView(props: SidebarDetailsProps) {
   const notice: DetailNotice | null = props.shown
     ? null
     : { icon: "EyeOff", text: strings.hidden, action: { label: board.strings.clearFilters, onPress: () => board.setParams((params) => ({ ...clearedParams(params), hideSubtasks: false })) } };
-  const { firstPrompt, humanMessage, lastMessage, sessionTokens } = useDetailReads(board, card);
-  return (
+  const { firstPrompt, humanMessage, lastMessage, sessionTokens, questionContext } = useDetailReads(board, card);
+  return (<>
+    <PreferenceSyncSlot />
     <TaskDetailCards
       key={props.tabs ? card.id : undefined}
+      translationAgentId={translationAgentOf(card)}
       {...detailActions(board, card)}
       searchQuery={board.params.query}
       theme={props.theme}
@@ -256,7 +263,7 @@ function SidebarDetailsView(props: SidebarDetailsProps) {
       sheetToggle={props.sheetToggle}
       onSheetClose={props.onSheetClose}
       questionActionsInHeader={props.questionActionsInHeader}
-      back={props.backId ? { title: props.backCard?.title ?? board.strings.back, onPress: () => dispatch({ type: "back" }) } : null}
+      back={props.backId ? { title: props.backCard?.title ?? cardStrings(board.language).parentUnknown, onPress: () => dispatch({ type: "back" }) } : null}
       notice={notice}
       onJump={(agentId) => {
         dispatch({ type: "jump", id: agentId });
@@ -268,6 +275,7 @@ function SidebarDetailsView(props: SidebarDetailsProps) {
       sessionTokens={sessionTokens}
       humanMessage={humanMessage}
       lastMessage={lastMessage}
+      questionContext={questionContext}
       actions={props.actions}
       scrollBody={props.scrollBody}
       columns={props.columns}
@@ -276,7 +284,7 @@ function SidebarDetailsView(props: SidebarDetailsProps) {
       onTabChange={(tab) => dispatch({ type: "tab", tab })}
       scrollHeader={props.scrollHeader}
     />
-  );
+  </>);
 }
 
 function SidebarCardMenu(props: { board: BoardController; card: TaskCard; theme: PluginTheme; point: { x: number; y: number }; onClose(): void }) {
@@ -333,7 +341,10 @@ export function useDetailReads(board: BoardController, card: TaskCard | undefine
     },
     subagent !== undefined,
   );
-  return subagent ? { ...subagentReads, humanMessage: null, sessionTokens: null } : { firstPrompt, humanMessage, lastMessage, sessionTokens };
+  const asking = agent?.lane === "needs_input" && agent.permission?.kind === "question" ? agent.permission : null;
+  const questionRead = useQuestionContext(board.paseo, agent?.id ?? "", asking);
+  const questionContext = asking && detailsShowNote(questionRead.context, lastMessage.prompt) ? questionRead : null;
+  return subagent ? { ...subagentReads, humanMessage: null, sessionTokens: null, questionContext: null } : { firstPrompt, humanMessage, lastMessage, sessionTokens, questionContext };
 }
 
 /**
@@ -428,9 +439,7 @@ function StatCell(props: {
   const labelKey = `${props.label}|${scale}`;
   const hideLabel = headingWidth !== null && labelSize?.key === labelKey && labelSize.width + 13 + 5 > headingWidth + 0.5;
   const { hovered, hoverProps } = useHover();
-  const reduced = useReducedMotion();
   const press = usePressCue(hovered);
-  const lift = surfaceLift(hovered, press.pressed, reduced, "capsule", press.input);
   const alert = props.lane === "needs_input" && (props.count ?? 0) > 0;
   const countStyle = { fontSize: props.countSize, lineHeight: HOST_LINE.base, fontWeight: "600" as const, color: alert ? tokens.warning : tokens.foreground, fontVariant: ["tabular-nums" as const] };
   return (
@@ -457,10 +466,8 @@ function StatCell(props: {
           paddingBottom: props.touch ? 2 : 6,
           borderRadius: 8,
           borderWidth: StyleSheet.hairlineWidth,
-          backgroundColor: "transparent",
-          // Transparent at rest; the needs-input alert's warning line keeps its hue.
-          ...liftStyle(tokens, lift, { border: alert ? tokens.warning : "transparent", hued: alert }),
-          ...scaleStyle(lift.scale),
+          backgroundColor: hoverFill(tokens.card.background, tokens.foreground, hovered, press.pressed, "transparent"),
+          borderColor: alert ? tokens.warning : "transparent",
           gap: 2,
         };
       }}
@@ -618,9 +625,9 @@ function GroupCard(props: { board: BoardController; options: ShownFilterOptions;
             style={{ flex: 1, minWidth: 0, padding: 0, fontSize: Math.round(F.base * scale), color: tokens.foreground, ...(Platform.OS === "web" ? ({ outlineStyle: "none" } as object) : null) }}
           />
           {query ? (
-            <Pressable testID="sidebar-groups-search-clear" accessibilityRole="button" accessibilityLabel={board.strings.menuSearch.clear} {...tipProps(board.strings.menuSearch.clear)} hitSlop={6} style={{ width: 20, height: 20, alignItems: "center", justifyContent: "center" }} onPress={() => setQueries((previous) => ({ ...previous, [kind]: "" }))}>
+            <HoverControl base={tokens.card.background} foreground={tokens.foreground} testID="sidebar-groups-search-clear" accessibilityRole="button" accessibilityLabel={board.strings.menuSearch.clear} {...tipProps(board.strings.menuSearch.clear)} hitSlop={6} style={{ width: 20, height: 20, borderRadius: 10, alignItems: "center", justifyContent: "center" }} onPress={() => setQueries((previous) => ({ ...previous, [kind]: "" }))}>
               <Icon name="X" size={13} color={tokens.foregroundMuted} />
-            </Pressable>
+            </HoverControl>
           ) : null}
         </View>
       </View>
@@ -729,7 +736,7 @@ function Segment(props: {
           borderRadius: 999,
           borderWidth: StyleSheet.hairlineWidth,
           borderColor: props.on ? tokens.surface2 : tokens.card.pillBorder,
-          backgroundColor: props.on ? tokens.surface2 : hovered || pressed ? tokens.card.controlHover : "transparent",
+          backgroundColor: hoverFill(props.on ? tokens.surface2 : tokens.card.background, tokens.foreground, hovered, pressed, props.on ? tokens.surface2 : "transparent"),
           flexDirection: "row" as const,
           alignItems: "center" as const,
           justifyContent: "center" as const,
@@ -768,7 +775,9 @@ function GroupRowView(props: { row: GroupRow; tokens: TaskTokens; touch: boolean
   const scale = useTasksFontScale();
   const { hovered, hoverProps } = useHover();
   // The tag hole follows the row background on hover.
-  const fill = row.on ? tokens.surface2 : hovered ? tokens.card.controlHover : tokens.card.background;
+  const [pressed, setPressed] = useState(false);
+  const base = row.on ? tokens.surface2 : tokens.card.background;
+  const fill = hoverFill(base, tokens.foreground, hovered, pressed);
   return (
     <Pressable
       accessibilityRole="checkbox"
@@ -776,6 +785,8 @@ function GroupRowView(props: { row: GroupRow; tokens: TaskTokens; touch: boolean
       accessibilityLabel={`${row.label}${row.detail ? ` ${row.detail}` : ""} ${row.count}`}
       {...tipProps(`${row.label}${row.detail ? ` · ${row.detail}` : ""}`)}
       onPress={row.toggle}
+      onPressIn={() => setPressed(true)}
+      onPressOut={() => setPressed(false)}
       {...hoverProps}
       style={({ pressed }) => {
         return {
@@ -789,7 +800,7 @@ function GroupRowView(props: { row: GroupRow; tokens: TaskTokens; touch: boolean
           flexDirection: "row",
           alignItems: "center",
           gap: 10,
-          backgroundColor: row.on ? tokens.surface2 : hovered || pressed ? tokens.card.controlHover : "transparent",
+          backgroundColor: hoverFill(base, tokens.foreground, hovered, pressed, row.on ? tokens.surface2 : "transparent"),
         };
       }}
     >

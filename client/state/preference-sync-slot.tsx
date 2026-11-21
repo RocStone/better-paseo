@@ -2,6 +2,12 @@ import { memo, useEffect, useRef, useSyncExternalStore } from "react";
 import { settingsRpc } from "@getpaseo/plugin";
 import { useSettings, type PluginClientContext } from "@getpaseo/plugin/client";
 import { PREFERENCES_SETTINGS, preferencesSchema } from "../../shared/preferences-settings";
+import { TIMELINE_TRANSLATION_SETTINGS } from "../../shared/timeline-translation";
+import {
+  forgetTranslationSettingsReader,
+  noteTranslationSettingsChanged,
+  useTranslationSettingsReport,
+} from "../translation/settings-store";
 import {
   DEFAULT_PREFERENCES,
   applyStoredPreferences,
@@ -91,6 +97,8 @@ const isRefreshing = () => refreshing;
  */
 export function watchPreferenceChanges(client: Pick<PluginClientContext, "paseo" | "rpc">): () => void {
   let live = true;
+  const translationRead = settingsRpc(TIMELINE_TRANSLATION_SETTINGS.id).read;
+  const readTranslation = async () => client.rpc(translationRead, {});
   // Only the latest read reports: an earlier one may answer last.
   let latestRead = 0;
   const read = () => {
@@ -108,10 +116,19 @@ export function watchPreferenceChanges(client: Pick<PluginClientContext, "paseo"
   readFromDaemon = read;
   const observation = client.paseo.observeEvents(["status.plugin_settings_changed"]);
   const unsubscribe = observation.subscribe({
-    snapshot() {},
+    // Sent when the host accepts the subscription and again after every
+    // reconnect (`connection/owned.ts`): changes made while offline sent no
+    // push, and the host's own refetch then may fail, so read again.
+    snapshot() {
+      noteTranslationSettingsChanged(readTranslation);
+    },
     update(message) {
       if (message.type !== "status") return;
       const { status, settingsId } = message.payload;
+      if (status === "plugin_settings_changed" && settingsId === TIMELINE_TRANSLATION_SETTINGS.id) {
+        noteTranslationSettingsChanged(readTranslation);
+        return;
+      }
       if (status !== "plugin_settings_changed" || settingsId !== PREFERENCES_SETTINGS.id) return;
       if (mountedHooks > 0) {
         changedWhileMounted = true;
@@ -123,6 +140,7 @@ export function watchPreferenceChanges(client: Pick<PluginClientContext, "paseo"
   return () => {
     live = false;
     if (readFromDaemon === read) readFromDaemon = null;
+    forgetTranslationSettingsReader(readTranslation);
     unsubscribe();
     void observation.release();
   };
@@ -204,6 +222,7 @@ function notifySlots() {
 
 function PreferenceSyncLeader() {
   usePreferenceSettings();
+  useTranslationSettingsReport(useSettings(TIMELINE_TRANSLATION_SETTINGS));
   return null;
 }
 

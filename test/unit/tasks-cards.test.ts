@@ -1,3 +1,4 @@
+import { hoverFill } from "../../client/tasks/hover-fill";
 import { actionIconOnly } from "../../client/tasks/cards/action-row";
 import { nativeProseText } from "./helpers/native-prose-text";
 /**
@@ -10,6 +11,8 @@ import React from "react";
 import { PixelRatio, StyleSheet, View } from "react-native";
 import { hostChildren, measureHostTree } from "./helpers/yoga-host-layout";
 import { TodoRow } from "../../client/tasks/cards/todo-row";
+import { startErrorDismissals } from "../../client/tasks/data/error-dismissals";
+import type { PluginClientContext } from "@getpaseo/plugin/client";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -68,7 +71,7 @@ vi.mock("../../client/ui/use-input-capabilities", async (original) => {
 });
 
 const clipboard = vi.hoisted(() => ({ copyText: vi.fn(async (_text: string) => {}), show: vi.fn(), error: vi.fn() }));
-vi.mock("@getpaseo/plugin/client/react-native", async () => {
+vi.mock("@getpaseo/plugin/client/ui", async () => {
   const react = await import("react");
   const rn = await import("./helpers/rn-mock");
   return {
@@ -84,6 +87,7 @@ vi.mock("@getpaseo/plugin/client/react-native", async () => {
 });
 
 import "./helpers/quiet-renderer";
+import { asExitPlan, exitPlanPermission } from "./helpers/plan-request";
 import TestRenderer, { act, type ReactTestInstance, type ReactTestRenderer } from "react-test-renderer";
 import { CARD_PRESETS, type CardSettings, type DensityPreset } from "../../shared/tasks-settings";
 import { previewSampleCards, sampleCards } from "../../client/tasks/sample-cards";
@@ -520,6 +524,14 @@ function sample(id: string): TaskCard {
   const card = sampleCards(NOW).find((candidate) => candidate.id === id);
   if (!card) throw new Error(`no sample ${id}`);
   return card;
+}
+
+/**
+ * The sample tool permission as another request kind. A mode change answers
+ * with the same Allow and Deny; every kind takes the request section.
+ */
+function asKind(card: TaskCard, kind: "plan" | "mode" | "other"): TaskCard {
+  return { ...card, permission: { ...card.permission!, kind } };
 }
 
 let renderer: ReactTestRenderer | null = null;
@@ -1369,25 +1381,27 @@ describe("TaskCardView rows", () => {
     const old = { ...orphan, parent: { id: "old", title: "多设备连接", missing: true, archived: false } };
     await act(async () => tree.update(cardElement(old, { onReveal, fields: fields("minimal") })));
     expect(texts(hostByTestId(tree.root, "task-card-meta"))).toEqual(["多设备连接"]);
-    // Historical links retain one label across parent states; the icon follows the archive state.
+    // Historical links keep the unlink icon across parent states.
     const subtaskMarks = () => tree.root.findAll((node) => typeof node.type === "string" && node.props.testID === "task-card-subtask-mark");
-    const tagIcons = () => icons(hostByTestId(tree.root, "task-card-meta-archived"));
     const inferred = (parent: Partial<NonNullable<TaskCard["parent"]>>) => ({ ...orphan, parent: { id: "former", title: "多设备连接", missing: true, archived: true, ...parent, detached: true as const } });
     const cases = [
-      { parent: { archivedAs: "agent" as const }, zh: ["多设备连接", "历史关联"], en: ["多设备连接", "History"], icon: "Archive" },
-      { parent: { archived: false, archivedAs: "workspace" as const }, zh: ["多设备连接", "历史关联"], en: ["多设备连接", "History"], icon: "Archive" },
+      { parent: { archivedAs: "agent" as const }, zh: "多设备连接", en: "多设备连接" },
+      { parent: { archived: false, archivedAs: "workspace" as const }, zh: "多设备连接", en: "多设备连接" },
       // Restored: on the board, not archived.
-      { parent: { missing: false, archived: false }, zh: ["多设备连接", "历史关联"], en: ["多设备连接", "History"], icon: "Info" },
+      { parent: { missing: false, archived: false }, zh: "多设备连接", en: "多设备连接" },
       // Unreadable: no title, archive unknown.
-      { parent: { title: null, archived: null }, zh: ["父任务", "历史关联"], en: ["Parent task", "History"], icon: "Info" },
+      { parent: { title: null, archived: null }, zh: "父任务", en: "Parent task" },
     ];
-    for (const { parent, zh, en, icon } of cases) {
+    for (const { parent, zh, en } of cases) {
       await act(async () => tree.update(cardElement(inferred(parent), { onReveal, fields: fields("minimal") })));
-      expect(texts(hostByTestId(tree.root, "task-card-meta"))).toEqual(zh);
-      expect(tagIcons()).toEqual([icon]);
+      expect(texts(hostByTestId(tree.root, "task-card-meta"))).toEqual([zh]);
+      const history = hostByTestId(tree.root, "task-card-meta-history");
+      expect(icons(history)).toEqual(["Unlink"]);
+      expect(history.props.accessibilityLabel).toContain("历史关联根据归档时间推测，可能有误");
       expect(subtaskMarks()).toHaveLength(0);
       await act(async () => tree.update(cardElement(inferred(parent), { onReveal, fields: fields("minimal"), language: "en" })));
-      expect(texts(hostByTestId(tree.root, "task-card-meta"))).toEqual(en);
+      expect(texts(hostByTestId(tree.root, "task-card-meta"))).toEqual([en]);
+      expect(hostByTestId(tree.root, "task-card-meta-history").props.accessibilityLabel).toContain("The former relationship is inferred");
     }
     await act(async () => hostByTestId(tree.root, "task-card-meta-parent").props.onPress());
     expect(onReveal).toHaveBeenLastCalledWith("former");
@@ -1397,20 +1411,37 @@ describe("TaskCardView rows", () => {
     platform.__rnMockOS = "web";
     try {
       const web = await render(cardElement(inferred({ archivedAs: "agent" }), { onReveal, fields: fields("minimal") }));
-      expect(hostByTestId(web.root, "task-card-meta-parent-tag-tip").props.dataSet?.bctip).toContain("历史关联根据归档时间推测，可能有误");
-      expect(hostByTestId(web.root, "task-card-meta-parent-tag-tip").props.dataSet?.bctip).toContain("父任务：已归档");
+      expect(hostByTestId(web.root, "task-card-meta-history").props.dataSet?.bctip).toContain("历史关联根据归档时间推测，可能有误");
+      expect(hostByTestId(web.root, "task-card-meta-history").props.dataSet?.bctip).toContain("父任务：已归档");
       await act(async () => web.update(cardElement(inferred({ archived: false, archivedAs: "workspace" }), { onReveal, fields: fields("minimal") })));
-      expect(hostByTestId(web.root, "task-card-meta-parent-tag-tip").props.dataSet?.bctip).toContain("父任务：工作区已归档");
+      expect(hostByTestId(web.root, "task-card-meta-history").props.dataSet?.bctip).toContain("父任务：工作区已归档");
       await act(async () => web.update(cardElement(inferred({ missing: false, archived: false }), { onReveal, fields: fields("minimal") })));
-      expect(hostByTestId(web.root, "task-card-meta-parent-tag-tip").props.dataSet?.bctip).toContain("父任务当前未归档");
+      expect(hostByTestId(web.root, "task-card-meta-history").props.dataSet?.bctip).toContain("父任务当前未归档");
       await act(async () => web.update(cardElement(inferred({ archived: null }), { onReveal, fields: fields("minimal"), language: "en" })));
-      expect(hostByTestId(web.root, "task-card-meta-parent-tag-tip").props.dataSet?.bctip).toContain("Parent archive status unknown");
+      expect(hostByTestId(web.root, "task-card-meta-history").props.dataSet?.bctip).toContain("Parent archive status unknown");
       await act(async () => web.update(cardElement(orphan, { onReveal, fields: fields("minimal"), language: "en" })));
       expect(hostByTestId(web.root, "task-card-meta-parent-tag-tip").props.dataSet?.bctip).toBe("Parent: Archived");
     } finally {
       if (saved === undefined) delete platform.__rnMockOS;
       else platform.__rnMockOS = saved;
     }
+  });
+
+  it.each([false, true])("keeps the historical link on the card corner diagonal with a context ring (compact: %s)", async (compact) => {
+    const parent = sample("sample-child-1").parent!;
+    const card = { ...sample("sample-running"), parent, context: { usedTokens: 90, maxTokens: 100 } };
+    const tree = await render(cardElement(card, { compact }));
+    const ringStyle = flat(hostByTestId(tree.root, "task-card-context").props.style);
+    const ringWidth = flat(hostByTestId(tree.root, "context-ring").props.style).width;
+    await act(async () => tree.update(cardElement({ ...card, parent: { ...parent, detached: true } }, { compact })));
+    const frame = flat(hostByTestId(tree.root, `task-card-${card.id}`).props.style);
+    const meta = hostByTestId(tree.root, "task-card-meta");
+    const history = hostByTestId(meta, "task-card-meta-history");
+    const inset = flat(history.props.style);
+    expect(inset).toMatchObject({ width: ringWidth, height: ringStyle.height, marginRight: ringStyle.marginRight, justifyContent: "center" });
+    expect(history.find((node) => (node.type as unknown) === "Icon").props.size).toBe(ringWidth);
+    expect(Number(frame.paddingTop) + (Number(inset.height) - Number(inset.width)) / 2).toBe(Number(frame.paddingHorizontal) + Number(inset.marginRight));
+    expect(flat(hostByTestId(meta, "task-card-context").props.style).marginRight).toBeCloseTo(0);
   });
 
   it.each([
@@ -1455,6 +1486,59 @@ describe("TaskCardView rows", () => {
     const mark = tree.root.find((node) => (node.type as unknown) === "Icon" && node.props.name === "CircleX");
     expect(mark.props.color).toBe("#6b6b75");
     expect(icons(tree.root)).not.toContain("Square");
+  });
+
+  it.each([LIGHT, DARK])("shows and clears hover feedback on the error dismiss button", async (theme) => {
+    const platform = globalThis as { __rnMockOS?: string };
+    const saved = platform.__rnMockOS;
+    platform.__rnMockOS = "web";
+    try {
+      const tree = await render(cardElement(sample("sample-failed"), { theme }));
+      const button = () => byLabel(tree.root, "关闭错误提示");
+      expect(flat(button().props.style).boxShadow).toBeUndefined();
+      await act(async () => button().props.onHoverIn());
+      const tokens = buildTaskTokens(theme.colors);
+      expect(flat(button().props.style).backgroundColor).toBe(hoverFill(tokens.card.failed, tokens.foreground, true, false));
+      expect(flat(button().props.style).boxShadow).toBeUndefined();
+      await act(async () => button().props.onHoverOut());
+      expect(flat(button().props.style).backgroundColor).toBe("transparent");
+    } finally {
+      if (saved === undefined) delete platform.__rnMockOS;
+      else platform.__rnMockOS = saved;
+    }
+  });
+
+  it.each([
+    { compact: false, size: 24, hitSlop: 8, icon: 12 },
+    { compact: true, size: 36, hitSlop: 4, icon: 14 },
+  ])("keeps the error dismiss mark at $size when compact is $compact", async ({ compact, size, hitSlop, icon }) => {
+    const tree = await render(cardElement(sample("sample-failed"), { compact }));
+    const dismiss = byLabel(tree.root, "关闭错误提示");
+    const style = flat(typeof dismiss.props.style === "function" ? dismiss.props.style({ pressed: false }) : dismiss.props.style);
+    expect(style).toMatchObject({ width: size, height: size, borderRadius: size / 2 });
+    expect(dismiss.props.hitSlop).toBe(hitSlop);
+    expect(dismiss.find((node) => (node.type as unknown) === "Icon" && node.props.name === "X").props.size).toBe(icon);
+  });
+
+  it("dismisses the current error without changing the task and shows a later error", async () => {
+    const rpc = vi.fn(async (contract: { name: string }, input: { agentId: string; error: string }) =>
+      contract.name === "tasks.error-dismissals" ? { entries: [] } : { ...input, dismissedAt: Date.now() });
+    let stop!: () => void;
+    await act(async () => { stop = startErrorDismissals({ rpc } as unknown as PluginClientContext); });
+    const card = sample("sample-failed");
+    const tree = await render(cardElement(card));
+    const dismiss = byLabel(tree.root, "关闭错误提示");
+    const style = flat(typeof dismiss.props.style === "function" ? dismiss.props.style({ pressed: false }) : dismiss.props.style);
+    expect(style.width).toBe(style.height);
+    expect(style.borderRadius).toBe(Number(style.width) / 2);
+    await act(async () => {
+      byLabel(tree.root, "关闭错误提示").props.onPress({ stopPropagation() {} });
+    });
+    expect(tree.root.findAll((node) => node.props.testID === "task-card-reason")).toHaveLength(0);
+    expect(card.status).toBe("failed");
+    await act(async () => { tree.update(cardElement({ ...card, error: "A new error" })); });
+    expect(hostByTestId(tree.root, "task-card-reason")).toBeDefined();
+    await act(async () => { tree.unmount(); stop(); });
   });
 
   it.each([LIGHT, DARK])("draws API errors in danger red on a done card", async (theme) => {
@@ -1548,7 +1632,7 @@ describe("TaskCardView rows", () => {
     const box = (style: unknown) => {
       const flatStyle = flat(style);
       return {
-        height: flatStyle.height,
+        height: flatStyle.height ?? flatStyle.minHeight,
         radius: flatStyle.borderRadius ?? flatStyle.borderTopLeftRadius,
         padding: flatStyle.paddingHorizontal,
         gap: flatStyle.gap,
@@ -1614,18 +1698,23 @@ describe("TaskCardView rows", () => {
     expect(icons(byLabel(tree.root, "允许"))).toEqual(["Check"]);
   });
 
-  it("on a phone, keeps the action labels on one line, sized to their text, in one row", async () => {
-    const card = sample("sample-input");
+  it("on a phone, keeps a mode request's action labels on one line, sized to their text, Stop alone on the bar above", async () => {
+    // A mode change answers under its divider as a tool permission does; no Open: Stop alone takes the bar, as on a running card.
+    const card = asKind(sample("sample-input"), "mode");
     const buttons = permissionButtons(card.permission!, "en");
     const element = (stopPhase: StopPhase) =>
-      cardElement(card, { compact: true, language: "en", permissionButtons: buttons, onStop: () => {}, stopPhase });
+      cardElement(card, { compact: true, language: "en", permissionButtons: buttons, onStop: () => {}, onOpen: undefined, stopPhase });
     const tree = await render(element("idle"));
+    expect(texts(hostByTestId(tree.root, "task-card-question-actions"))).toEqual(["Allow", "Deny"]);
+    expect(texts(hostByTestId(tree.root, "task-card-actions"))).toEqual(["Stop"]);
+    expect(rows(tree.root, card.id).indexOf("task-card-actions")).toBeLessThan(rows(tree.root, card.id).indexOf("task-card-permission"));
+    expect(flat(hostByTestId(tree.root, "task-card-question-actions").props.style).flexWrap).toBeUndefined();
     const allow = flat(byLabel(tree.root, "Allow").props.style);
     expect(allow).toMatchObject({ minHeight: 32, flexGrow: 1, flexShrink: 0, flexBasis: "auto", minWidth: 32 });
     expect(allow.height).toBeUndefined();
     expect(allow.flex).toBeUndefined();
     const label = byLabel(tree.root, "Allow").find((node) => (node.type as unknown) === "Text");
-    expect(label.props.numberOfLines).toBe(1);
+    expect(label.props.numberOfLines).toBeUndefined();
     expect(flat(label.props.style).flexShrink).toBe(0);
     // No flexWrap: on Android it left a phantom second row's height under the buttons.
     expect(flat(hostByTestId(tree.root, "task-card-actions").props.style).flexWrap).toBeUndefined();
@@ -1647,29 +1736,118 @@ describe("TaskCardView rows", () => {
     expect(icons(confirm)).toEqual(["OctagonAlert"]);
   });
 
-  it("draws the permission summary, its buttons and the remaining count", async () => {
-    const buttons: PermissionButton[] = [
-      { key: "allow", label: "允许", variant: "primary", kind: "respond", action: { behavior: "allow", id: null } },
-      { key: "deny", label: "拒绝", variant: "secondary", kind: "respond", action: { behavior: "deny", id: null } },
-    ];
+  // A mode change, a real ExitPlanMode and an unknown request take a tool permission's section.
+  it.each([
+    { kind: "mode", divider: "待授权", answers: ["允许", "拒绝"], controls: ["打开"] },
+    { kind: "plan", divider: "待确认", answers: ["拒绝", "实施"], controls: ["打开"] },
+    { kind: "other", divider: "待回答", answers: ["去回答"], controls: [] },
+  ] as const)("draws a $kind request's summary, its answers and the remaining count in its section", async ({ kind, divider, answers, controls }) => {
+    const base = sample("sample-input");
+    const card = kind === "plan" ? { ...asExitPlan(base), permission: { ...exitPlanPermission(), remaining: 1 } } : asKind(base, kind);
+    const buttons = permissionButtons(card.permission!, "zh", true);
     const onPermission = vi.fn();
     const onOpen = vi.fn();
-    const card = sample("sample-input");
     const tree = await render(cardElement(card, { permissionButtons: buttons, onPermission, onOpen }));
     const all = texts(tree.root);
-    expect(all).toContain("Bash · npm run db:migrate -- --env staging");
+    expect(all).toContain(kind === "plan" ? "计划 · Ship the request layout" : "Bash · npm run db:migrate -- --env staging");
+    expect(all).not.toContain("ExitPlanMode");
     expect(all).toContain("还有 1 条");
-    expect(all).toContain("等待 4m");
-    // The wait sits on the buttons' row, under the divider, not on a footer row above it.
-    expect(rows(tree.root, "sample-input")).not.toContain("task-card-footer");
-    expect(texts(hostByTestId(hostByTestId(tree.root, "task-card-permission"), "task-card-footer"))).toEqual(["等待 4m"]);
-    // A tablet's Open takes a row of its own under the answer row.
-    expect(texts(hostByTestId(hostByTestId(tree.root, "task-card-permission"), "task-card-control-row"))).toEqual(["打开"]);
-    // The buttons start at the card's edge, as its text does, not under the request's icon.
+    const request = hostByTestId(tree.root, "task-card-permission");
+    // The wait sits on the divider, not on a footer row above it nor after the answers.
+    expect(rows(tree.root, card.id)).not.toContain("task-card-footer");
+    expect(texts(hostByTestId(request, "task-card-question-divider"))).toEqual([divider, "·", "4m"]);
+    expect(hostByTestId(request, "task-card-answer-row").findAll((node) => node.props.testID === "task-card-footer")).toHaveLength(0);
+    // The controls row comes first, above the divider (an unknown request's "Answer" opens the tab, so it has none here).
+    if (controls.length > 0) {
+      expect(rows(tree.root, card.id).indexOf("task-card-control-row")).toBeLessThan(rows(tree.root, card.id).indexOf("task-card-permission"));
+      expect(texts(hostByTestId(tree.root, "task-card-control-row"))).toEqual(controls);
+    } else expect(tree.root.findAll((node) => node.props.testID === "task-card-control-row")).toHaveLength(0);
+    // The divider names it: no icon beside the request's text, which starts at the card's edge.
+    const text = request.find((node) => typeof node.type === "string" && node.props.numberOfLines === 2);
+    expect(icons(text.parent!)).toEqual([]);
     expect(flat(hostByTestId(tree.root, "task-card-answer-row").props.style).paddingLeft).toBeUndefined();
+    expect(texts(hostByTestId(tree.root, "task-card-answer-actions"))).toEqual(answers);
+    byLabel(tree.root, answers.at(-1)!).props.onPress();
+    expect(onPermission).toHaveBeenCalledWith(card, buttons.at(-1));
+    expect(onOpen).not.toHaveBeenCalled();
+  });
+
+  // The card names the plan by its title; "View plan" opens the whole plan, and its press does not choose the card.
+  it("titles a plan request and opens the whole plan from View plan", async () => {
+    const card = asExitPlan(sample("sample-input"));
+    const onSelect = vi.fn();
+    const onPermission = vi.fn();
+    const tree = await render(cardElement(card, { permissionButtons: permissionButtons(card.permission!, "zh", true), onPermission, onSelect }));
+    const planDialogs = () => tree.root.findAll((node) => typeof node.type === "string" && node.props.testID === "task-plan-dialog");
+    const request = hostByTestId(tree.root, "task-card-permission");
+    const title = request.find((node) => typeof node.type === "string" && node.props.numberOfLines === 2);
+    expect(texts(title)).toEqual(["计划 · Ship the request layout"]);
+    // The button sits on the title's row, after the title, and keeps its width.
+    const view = byLabel(request, "查看计划");
+    let row = view.parent!;
+    while (!texts(row).includes("计划 · Ship the request layout")) row = row.parent!;
+    expect(flat(row.props.style)).toMatchObject({ flexDirection: "row" });
+    expect(texts(row)).toEqual(["计划 · Ship the request layout", "查看计划"]);
+    expect(flat(view.props.style)).toMatchObject({ flexShrink: 0 });
+    expect(planDialogs()).toHaveLength(0);
+    const stopPropagation = vi.fn();
+    await act(async () => view.props.onPress({ stopPropagation }));
+    expect(stopPropagation).toHaveBeenCalled();
+    expect(onSelect).not.toHaveBeenCalled();
+    expect(onPermission).not.toHaveBeenCalled();
+    const dialog = hostByTestId(tree.root, "task-plan-dialog");
+    expect(tree.root.find((node) => (node.type as unknown) === "Modal").props.title).toBe("计划");
+    expect(dialog.findAllByType(MarkdownView)[0]!.props.text).toBe("# Ship the request layout\n1. Section every request\n2. Test it");
+    // Outside the card's pressable: a press in the dialog never reaches the card.
+    expect(hostByTestId(tree.root, `task-card-${card.id}`).findAll((node) => node.props.testID === "task-plan-dialog")).toHaveLength(0);
+    // Closing it, and a newer plan in its place, both leave it closed.
+    await act(async () => tree.root.find((node) => (node.type as unknown) === "Modal").props.onOpenChange(false));
+    expect(planDialogs()).toHaveLength(0);
+    await act(async () => byLabel(hostByTestId(tree.root, "task-card-permission"), "查看计划").props.onPress({ stopPropagation }));
+    expect(planDialogs()).toHaveLength(1);
+    const newer = asExitPlan(card, { id: "permission-newer-plan" });
+    await act(async () => tree.update(cardElement(newer, { permissionButtons: permissionButtons(newer.permission!, "zh", true), onPermission, onSelect })));
+    expect(planDialogs()).toHaveLength(0);
+  });
+
+  it("offers View plan only on a plan request", async () => {
+    const card = sample("sample-input");
+    const tree = await render(cardElement(card, { permissionButtons: permissionButtons(card.permission!, "zh", true) }));
+    expect(tree.root.findAll((node) => node.props.testID === "task-card-view-plan")).toHaveLength(0);
+  });
+
+  it("lays a tool permission out as a question: controls above its divider, Allow and Deny under it", async () => {
+    const card = sample("sample-input");
+    const buttons = permissionButtons(card.permission!, "zh", true);
+    const onPermission = vi.fn();
+    const onOpen = vi.fn();
+    const tree = await render(cardElement(card, { permissionButtons: buttons, onPermission, onOpen }));
+    expect(texts(tree.root)).toContain("Bash · npm run db:migrate -- --env staging");
+    expect(texts(tree.root)).toContain("还有 1 条");
+    const request = hostByTestId(tree.root, "task-card-permission");
+    expect(rows(tree.root, card.id)).not.toContain("task-card-footer");
+    expect(rows(tree.root, card.id).indexOf("task-card-control-row")).toBeLessThan(rows(tree.root, card.id).indexOf("task-card-permission"));
+    expect(texts(hostByTestId(tree.root, "task-card-control-row"))).toEqual(["打开"]);
+    // The divider says it waits for approval, and how long; the request's text loses its icon, as a question's does.
+    expect(texts(hostByTestId(request, "task-card-question-divider"))).toEqual(["待授权", "·", "4m"]);
+    expect(hostByTestId(request, "task-card-answer-row").findAll((node) => node.props.testID === "task-card-footer")).toHaveLength(0);
+    const text = request.find((node) => typeof node.type === "string" && node.props.numberOfLines === 2);
+    expect(icons(text.parent!)).toEqual([]);
+    expect(texts(hostByTestId(tree.root, "task-card-answer-actions"))).toEqual(["允许", "拒绝"]);
     byLabel(tree.root, "拒绝").props.onPress();
     expect(onPermission).toHaveBeenCalledWith(card, buttons[1]);
     expect(onOpen).not.toHaveBeenCalled();
+  });
+
+  it("on a phone, puts a tool permission's Allow and Deny under its divider and Stop on the bar above", async () => {
+    const card = sample("sample-input");
+    const buttons = permissionButtons(card.permission!, "en");
+    const tree = await render(cardElement(card, { compact: true, language: "en", permissionButtons: buttons, onStop: () => {}, onOpen: undefined }));
+    expect(texts(hostByTestId(tree.root, "task-card-question-actions"))).toEqual(["Allow", "Deny"]);
+    expect(texts(hostByTestId(tree.root, "task-card-actions"))).toEqual(["Stop"]);
+    expect(rows(tree.root, card.id).indexOf("task-card-actions")).toBeLessThan(rows(tree.root, card.id).indexOf("task-card-permission"));
+    expect(flat(byLabel(tree.root, "Allow").props.style)).toMatchObject({ minHeight: 32, flexGrow: 1, flexShrink: 0, flexBasis: "auto" });
+    expect(flat(hostByTestId(tree.root, "task-card-question-actions").props.style).flexWrap).toBeUndefined();
   });
 
   it("leaves out a permission summary its title already says", async () => {
@@ -1733,6 +1911,16 @@ describe("ProjectIcon", () => {
     expect(flat(image.props.style).borderRadius).toBeUndefined();
   });
 
+  it("shows the generated phone icon when an image fails and retries a changed image", async () => {
+    const card = sample("sample-running");
+    const withIcon = (uri: string) => ({ ...card, location: { ...card.location, projectIcon: uri } });
+    const tree = await render(cardElement(withIcon("data:image/png;base64,AAAA"), { compact: true }));
+    await act(async () => hostByTestId(tree.root, "project-icon-image").props.onError());
+    expect(hostByTestId(tree.root, "project-icon-generated").find((node) => (node.type as unknown) === "Text").props.children).toBe("B");
+    await act(async () => tree.update(cardElement(withIcon("data:image/png;base64,BBBB"), { compact: true })));
+    expect(hostByTestId(tree.root, "project-icon-image").props.source.uri).toBe("data:image/png;base64,BBBB");
+  });
+
   it.each([false, true])("centres the project icon, status mark and start clock in one column (compact=%s)", async (compact) => {
     const tree = await render(cardElement(sample("sample-running"), { compact }));
     // The nearest host View around a node that sets a width: the column cell it is centred in.
@@ -1752,6 +1940,20 @@ describe("ProjectIcon", () => {
     const clock = hostByTestId(tree.root, "task-card-started").find((node) => (node.type as unknown) === "Icon");
     expect(cell(clock)).toMatchObject(column);
     expect(clock.props.size).toBe(compact ? 14 : 12);
+  });
+
+  it.each([false, true])("scales the title status icon with the title text (compact=%s)", async (compact) => {
+    for (const factor of [0.8, 1, 1.5]) {
+      const tree = await render(React.createElement(TasksTypographyScale, {
+        factor,
+        children: cardElement(sample("sample-done"), { compact }),
+      }));
+      const title = hostByTestId(tree.root, "task-card-title");
+      const status = hostByTestId(tree.root, "status-done");
+      const icon = status.find((node) => (node.type as unknown) === "Icon");
+      expect(icon.props.size).toBe(flat(title.props.style).fontSize);
+      await act(async () => tree.unmount());
+    }
   });
 
   it.each([
@@ -2240,15 +2442,24 @@ describe("TaskCardView actions", () => {
     expect(texts(hostByTestId(done.root, "task-card-actions"))).toEqual(["打开"]);
     await act(async () => done.unmount());
 
-    // A permission's Allow and Deny follow it; a question's "Answer" already opens the tab.
-    const input = sample("sample-input");
-    const allow = await render(cardElement(input, { compact: true, permissionButtons: permissionButtons(input.permission!, "zh") }));
-    // Beside Allow and Deny it is a square icon, its label read out.
-    const square = byLabel(allow.root, "打开");
-    expect(texts(square)).toEqual([]);
-    expect(icons(square)).toEqual(["ArrowUpRight"]);
-    expect(flat(square.props.style)).toMatchObject({ width: 32, flexGrow: 0 });
-    await act(async () => allow.unmount());
+    // A mode request's and a plan's answers sit under its divider too: Open keeps its label beside Stop.
+    const input = asKind(sample("sample-input"), "mode");
+    for (const asking of [input, asExitPlan(sample("sample-input"))]) {
+      const allow = await render(cardElement(asking, { compact: true, onOpen, onStop: () => {}, permissionButtons: permissionButtons(asking.permission!, "zh") }));
+      expect(texts(hostByTestId(allow.root, "task-card-actions"))).toEqual(["停止", "打开"]);
+      expect(texts(hostByTestId(allow.root, "task-card-question-actions"))).toEqual(asking.permission!.kind === "plan" ? ["拒绝", "实施"] : ["允许", "拒绝"]);
+      expect(flat(byLabel(allow.root, "打开").props.style)).toMatchObject({ flexGrow: 1 });
+      expect(flat(hostByTestId(allow.root, "task-card-stop").props.style)).toMatchObject({ flexGrow: 0 });
+      await act(async () => allow.unmount());
+    }
+    // A tool permission's Allow and Deny sit under its divider, as a question's options do: Open keeps its label beside Stop.
+    const tool = sample("sample-input");
+    const toolCard = await render(cardElement(tool, { compact: true, onOpen, onStop: () => {}, permissionButtons: permissionButtons(tool.permission!, "zh") }));
+    expect(texts(hostByTestId(toolCard.root, "task-card-actions"))).toEqual(["停止", "打开"]);
+    expect(texts(hostByTestId(toolCard.root, "task-card-question-actions"))).toEqual(["允许", "拒绝"]);
+    expect(flat(byLabel(toolCard.root, "打开").props.style)).toMatchObject({ flexGrow: 1 });
+    expect(flat(hostByTestId(toolCard.root, "task-card-stop").props.style)).toMatchObject({ flexGrow: 0 });
+    await act(async () => toolCard.unmount());
     const question = { ...input, permission: { requestId: "q", kind: "question" as const, title: "Which database?", summary: null, actions: [], remaining: 0 } };
     const answer = await render(cardElement(question, { compact: true, onStop: () => {}, permissionButtons: permissionButtons(question.permission!, "zh") }));
     expect(texts(hostByTestId(answer.root, "task-card-actions"))).toEqual(["停止"]);
@@ -3931,7 +4142,7 @@ describe("TaskDetailCards", () => {
     expect(sections.map((node) => node.props.testID)).toEqual(["detail-location", "detail-prompt", "detail-activity", "detail-usage"]);
     const body = hostByTestId(tree.root, "detail-prompt-text");
     const size = Math.round(tree.root.findByType(MarkdownView).props.tokens.typography.content.size * 0.9);
-    expect(body.props.style).toMatchObject({ maxHeight: 10 * variantMetrics("document", size).bodyLineHeight, overflow: "hidden" });
+    expect(body.props.style).toMatchObject({ maxHeight: 10 * variantMetrics("document", size).bodyLineHeight, overflow: "scroll" });
     expect(texts(hostByTestId(tree.root, "detail-prompt"))).toEqual(["First prompt", "Check whether this issue is handled:", "The board\nThe sidebar\nThe sheet\nThe phone\nOne\nTwo\nThree\nFour\nFive", "Show all · 11 lines"]);
     await act(async () => hostByTestId(tree.root, "detail-prompt-more").props.onPress());
     expect(hostByTestId(tree.root, "detail-prompt-text").props.style).toBeNull();
@@ -3952,7 +4163,7 @@ describe("TaskDetailCards", () => {
     const card = { ...sample("sample-running"), title: "A generated title that runs well past five lines once the sidebar wraps it around the card" };
     const tree = await render(details(card, {}, "en"));
     // Folded before it is measured: a long title never paints open for a frame.
-    expect(flat(hostByTestId(tree.root, "detail-title-text").props.style)).toMatchObject({ maxHeight: 5 * 20, overflow: "hidden" });
+    expect(flat(hostByTestId(tree.root, "detail-title-text").props.style)).toMatchObject({ maxHeight: 5 * 20, overflow: "scroll" });
     expect(tree.root.findAll((node) => node.props.testID === "detail-title-more")).toHaveLength(0);
 
     // Measured at eight lines: the same fade and "Show all" row as the messages.
@@ -3991,8 +4202,17 @@ describe("TaskDetailCards", () => {
         const heading = () => hostByTestId(tree.root, `${id}-heading`);
         expect(heading().type).toBe("Pressable");
         expect(heading().props.accessibilityState.expanded).toBe(true);
+        const copyButton = () => hostByTestId(tree.root, `${id}-copy`);
+        const fill = () => hostByTestId(tree.root, `${id}-copy-fill`);
+        expect(flat(copyButton().props.style)).toMatchObject({ width: 28, height: 28 });
+        expect(flat(hostByTestId(tree.root, `${id}-chevron`).props.style)).toMatchObject({ width: 28, height: 28 });
+        expect(flat(fill().props.style)).toMatchObject({ width: 24, height: 24, borderRadius: 6, backgroundColor: "transparent" });
+        await act(async () => copyButton().props.onHoverIn());
+        const tokens = taskTokens(LIGHT);
+        expect(flat(fill().props.style).backgroundColor).toBe(hoverFill(tokens.card.background, tokens.foreground, true, false, "transparent"));
+        await act(async () => copyButton().props.onHoverOut());
         const stopPropagation = vi.fn();
-        await act(async () => hostByTestId(tree.root, `${id}-copy`).props.onPress({ stopPropagation }));
+        await act(async () => copyButton().props.onPress({ stopPropagation }));
         expect(stopPropagation).toHaveBeenCalledOnce();
         expect(clipboard.copyText).toHaveBeenLastCalledWith(text);
         expect(heading().props.accessibilityState.expanded).toBe(true);
@@ -4068,7 +4288,15 @@ describe("TaskDetailCards", () => {
     const press = (id: string, index: number) => act(async () => hostByTestId(tree.root, id).findByType("EnrichedMarkdownText" as never).props.onLinkPress({ nativeEvent: { url: `bc-prose://${index}` } }));
     for (const [id, path] of [["detail-prompt", "/repo/docs/spec.md"], ["detail-human", "/repo/notes.md"], ["detail-message", "/repo/docs/delivery.md"]] as const) {
       await press(id, 0);
-      expect(folder.reveal).toHaveBeenLastCalledWith({ cwd: card.location.cwd, path });
+      expect(folder.reveal).toHaveBeenLastCalledWith({ cwd: card.location.cwd, path, expectedApp: getEnhancerPreferences().fileOpenApp });
+    }
+    const previousApp = getEnhancerPreferences().fileOpenApp;
+    try {
+      await act(async () => updateEnhancerPreferences({ fileOpenApp: "zed" }));
+      await press("detail-message", 0);
+      expect(folder.reveal).toHaveBeenLastCalledWith({ cwd: card.location.cwd, path: "/repo/docs/delivery.md", expectedApp: "zed" });
+    } finally {
+      await act(async () => updateEnhancerPreferences({ fileOpenApp: previousApp }));
     }
     expect(clipboard.copyText).not.toHaveBeenCalled();
     // A web link still opens in the browser.
@@ -4257,12 +4485,23 @@ describe("TaskDetailCards", () => {
     expect(flat(byLabel(tree.root, "允许").props.style)).toMatchObject({ backgroundColor: card0.background, borderColor: card0.primaryBorder, borderWidth: 0.5 });
     expect(flat(byLabel(tree.root, "拒绝").props.style)).toMatchObject({ backgroundColor: card0.background, borderColor: taskTokens(LIGHT).danger });
     await act(async () => byLabel(tree.root, "允许").props.onHoverIn());
-    expect(flat(byLabel(tree.root, "允许").props.style).backgroundColor).toBe(card0.background);
+    expect(flat(byLabel(tree.root, "允许").props.style).backgroundColor).toBe(detailColors(taskTokens(LIGHT)).rowHover);
     await act(async () => byLabel(tree.root, "允许").props.onPress());
     expect(onPermission).toHaveBeenCalledWith(expect.objectContaining({ kind: "respond" }));
     // The phone's bar carries them instead.
     await act(async () => tree.update(details(card, { onPermission, permissionButtons: permissionButtons(card.permission!, "zh"), actions: false })));
     expect(hostByTestId(tree.root, "detail-permission").findAll((node) => node.props.testID === "detail-permission-buttons")).toEqual([]);
+  });
+
+  it("names a plan in the details by its title, as text, with View plan opening the whole plan", async () => {
+    const card = asExitPlan(sample("sample-input"));
+    const tree = await render(details(card, { onPermission: vi.fn(), permissionButtons: permissionButtons(card.permission!, "zh", true) }));
+    const block = hostByTestId(tree.root, "detail-permission");
+    expect(texts(block).slice(0, 3)).toEqual(["计划", "查看计划", "Ship the request layout"]);
+    const summary = block.find((node) => typeof node.type === "string" && node.props.children === "Ship the request layout");
+    expect(flat(summary.props.style).fontFamily).toBeUndefined();
+    await act(async () => byLabel(block, "查看计划").props.onPress({ stopPropagation: vi.fn() }));
+    expect(hostByTestId(tree.root, "task-plan-dialog").findAllByType(MarkdownView)[0]!.props.text).toContain("1. Section every request");
   });
 
   it("puts the phone's actions in a bar: stop then open while running, open last while asking", async () => {
@@ -4554,12 +4793,8 @@ describe("TaskDetailCards", () => {
       const tokens = taskTokens(LIGHT);
       expect(background).toBe(tokens.card.background);
       await act(async () => chip.props.onHoverIn());
-      expect(flat(hostByTestId(tree.root, id).props.style).backgroundColor).toBe(background);
+      expect(flat(hostByTestId(tree.root, id).props.style).backgroundColor).toBe(detailColors(tokens).rowHover);
       expect(flat(hostByTestId(tree.root, id).props.style).boxShadow).toBeUndefined();
-      await act(async () => chip.props.onPressIn());
-      expect(flat(hostByTestId(tree.root, id).props.style).backgroundColor).toBe(background);
-      expect(flat(hostByTestId(tree.root, id).props.style).boxShadow).toBeUndefined();
-      await act(async () => chip.props.onPressOut());
       await act(async () => chip.props.onHoverOut());
       expect(flat(hostByTestId(tree.root, id).props.style).backgroundColor).toBe(background);
       expect(flat(hostByTestId(tree.root, id).props.style).boxShadow).toBeUndefined();
@@ -4989,17 +5224,15 @@ describe("responsive task actions", () => {
     expect(actionIconOnly(120, sizes, 8)).toEqual([true, true, true]);
   });
 
-  // Allow leads the card's and the details' row but trails the phone sheet's
-  // (Deny, Allow): a narrow row gives up Deny's words first in all three.
-  it.each(["card", "phone card", "sidebar", "sheet"] as const)("keeps Allow's label after Deny folds on the %s", async (surface) => {
+  // The details surfaces keep their existing icon-folding behavior.
+  it.each(["sidebar", "sheet"] as const)("keeps Allow's label after Deny folds on the %s", async (surface) => {
     const card = sample("sample-input");
     const buttons = permissionButtons(card.permission!, "en");
     const shared = { card, theme: LIGHT, language: "en" as const, strings: BOARD_STRINGS.en.sidebar, permissionButtons: buttons, onPermission() {} };
-    const element = surface === "card" || surface === "phone card"
-      ? cardElement(card, { compact: surface === "phone card", language: "en", permissionButtons: buttons, onPermission() {} })
-      : surface === "sidebar" ? React.createElement(TaskDetailCards, { ...shared, now: NOW, touch: true }) : React.createElement(DetailActionBar, shared);
+    const element = surface === "sidebar" ? React.createElement(TaskDetailCards, { ...shared, now: NOW, touch: true }) : React.createElement(DetailActionBar, shared);
     const tree = await render(element);
-    const rowId = { card: "task-card-answer-actions", "phone card": "task-card-actions", sidebar: "detail-permission-actions", sheet: "detail-action-bar" }[surface];
+    // A tool permission's answers take their own row under the divider on a phone too.
+    const rowId = { sidebar: "detail-permission-actions", sheet: "detail-action-bar" }[surface];
     const row = () => hostByTestId(tree.root, rowId);
     const labels = () => row().findAll((node) => (node.type as unknown) === "Text" && typeof node.props.onLayout === "function");
     await act(async () => {
@@ -5046,7 +5279,7 @@ describe("responsive task actions", () => {
     expect(answers.map((node) => node.props.accessibilityLabel)).toEqual(options);
     for (const [index, answer] of answers.entries()) {
       expect(texts(answer)).toEqual([options[index]]);
-      if (surface === "card" || surface === "phone card") expect(answer.find((node) => (node.type as unknown) === "Text").props).toMatchObject({ numberOfLines: 1, ellipsizeMode: "tail" });
+      if (surface === "card" || surface === "phone card") expect(answer.find((node) => (node.type as unknown) === "Text").props.numberOfLines).toBeUndefined();
       expect(icons(answer)).toEqual([]);
       await act(async () => answer.props.onPress());
     }

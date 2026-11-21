@@ -12,7 +12,7 @@ function listContext() {
   return store.__tableListContext ??= React.createContext<{ getScrollMetrics(): { offset: number } } | null>(null);
 }
 vi.mock("react-native", async () => ({ ...await import("./helpers/rn-mock"), VirtualizedList: { contextType: listContext() } }));
-vi.mock("@getpaseo/plugin/client/react-native", async () => {
+vi.mock("@getpaseo/plugin/client/ui", async () => {
   const rn = await import("./helpers/rn-mock");
   return {
     Icon: (props: Record<string, unknown>) => React.createElement("Icon", props),
@@ -21,7 +21,6 @@ vi.mock("@getpaseo/plugin/client/react-native", async () => {
     Modal: rn.View,
     copyText,
     useToast: () => ({ show: toastShow, error() {}, success() {} }),
-    useRevealedText: (text: string) => text,
   };
 });
 vi.mock("@getpaseo/plugin/client", () => ({
@@ -511,11 +510,12 @@ describe("Markdown table copy", () => {
         && (node.children[0] === label || node.children[0] === copied));
       expect(labels()).toHaveLength(0);
       expect(StyleSheet.flatten(buttons()[0]!.props.style)).toMatchObject({
-        width: 30, height: 30, borderWidth: 1, borderRadius: 12, borderColor: tokens.v2.border,
+        width: 30, height: 30, borderWidth: 1, borderRadius: 15, borderColor: tokens.v2.border,
       });
       act(() => { buttons()[0]!.props.onHoverIn(); });
       // The frame's edge stays light on hover: only the fill marks it.
-      expect(StyleSheet.flatten(buttons()[0]!.props.style)).toMatchObject({ borderColor: tokens.v2.border, backgroundColor: tokens.v2.surface2 });
+      expect(StyleSheet.flatten(buttons()[0]!.props.style)).toMatchObject({ borderColor: tokens.v2.border });
+      expect(StyleSheet.flatten(buttons()[0]!.findByProps({ testID: "toolbar-icon-fill" }).props.style)).toMatchObject({ width: 24, height: 24, borderRadius: 12, backgroundColor: tokens.v2.surface2 });
       act(() => { vi.advanceTimersByTime(TOOLBAR_TOOLTIP_MS - 1); });
       expect(labels()).toHaveLength(0);
       act(() => { vi.advanceTimersByTime(1); });

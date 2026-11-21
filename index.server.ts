@@ -1,14 +1,16 @@
-import { spawn } from "node:child_process";
 import { open, stat, type FileHandle } from "node:fs/promises";
+import type { Stats } from "node:fs";
 import { isAbsolute, join, resolve } from "node:path";
 import type { PluginServerContext } from "@getpaseo/plugin/server";
 import { updateCheckRpc } from "./shared/update-check";
+import { agentUpdatesRpc } from "./shared/agent-updates";
+import { createAgentUpdateCheck } from "./server/agent-updates";
 import { openTerminalRpc, updateCommand } from "./shared/open-terminal";
 import { createUpdateCheck, startAutomaticUpdateCheck } from "./server/update-check";
 import { pluginDataDir } from "./server/plugin-data";
 import { openSystemTerminal } from "./server/open-terminal";
-import { PREFERENCES_SETTINGS } from "./shared/preferences-settings";
-import { revealPathRpc } from "./shared/file-rpc";
+import { PREFERENCES_SETTINGS, type FileOpenApp } from "./shared/preferences-settings";
+import { installedEditorsRpc, revealPathRpc, type FileOpenErrorKind } from "./shared/file-rpc";
 import { embeddedFontsRpc } from "./shared/font-rpc";
 import { type HighlightLine, type HighlightToken, highlightRpc } from "./shared/highlight-rpc";
 import { imageRpc } from "./shared/image-rpc";
@@ -19,8 +21,11 @@ import { EMBEDDED_FONTS } from "./server/font-data";
 import { MARK_BITMAPS } from "./server/mark-bitmaps";
 import { writePerfDump } from "./server/perf-dump";
 import { registerTasksServer } from "./server/tasks/register";
+import { registerTimelineTranslation } from "./server/translation/service";
 import { registerTurnUsageServer } from "./server/turn-usage";
-import { shellOpenCommand, type PathEntry } from "./server/open-path";
+import { launches } from "./server/open-path";
+import { EditorUnavailableError, installedEditors } from "./server/editor-target";
+import { LaunchUnconfirmedError, openInEditor, openWithShell } from "./server/open-process";
 
 /**
  * Image types worth inlining, and the mime each one needs in its data URI.
@@ -134,14 +139,9 @@ async function resolveSelector(path: string, cwd: string): Promise<ResolvedSelec
   return isNetworkOrDevicePath(stripped) ? { error: "Not a local path" } : { path: stripped };
 }
 
-/** Runs the path press's shell command (`shellOpenCommand`), detached. */
-function openWithShell(target: string, entry: PathEntry): void {
-  const { command, args, windowsVerbatimArguments } = shellOpenCommand(process.platform, target, entry);
-  const child = spawn(command, args, { detached: true, stdio: "ignore", ...(windowsVerbatimArguments ? { windowsVerbatimArguments } : null) });
-  // Explorer reports a non-zero exit even when it opened the window, so the
-  // result is never read. Detaching keeps the daemon free of a zombie child.
-  child.on("error", () => {});
-  child.unref();
+/** A failed `file.reveal` reply; the kind and app let the client localize it. */
+function revealFailure(error: unknown, errorKind?: FileOpenErrorKind, errorApp?: FileOpenApp) {
+  return { revealed: null, error: error instanceof Error ? error.message : String(error), ...(errorKind && { errorKind }), ...(errorApp && { errorApp }) };
 }
 
 const DARK_THEME = "github-dark-default";
@@ -476,27 +476,52 @@ export default function contribute(server: PluginServerContext) {
   const checkUpdate = createUpdateCheck(undefined, join(pluginDataDir(), "update-check.json"));
   const stopAutomaticUpdateCheck = startAutomaticUpdateCheck(preferences, checkUpdate);
   server.handle(updateCheckRpc, ({ action }) => checkUpdate(action));
+  const checkAgents = createAgentUpdateCheck();
+  server.handle(agentUpdatesRpc, async ({ action }, { paseo }) => {
+    const settings = await preferences.read();
+    return checkAgents(action, paseo, settings.status === "ready" && settings.values.autoUpdateCheck);
+  });
   server.handle(openTerminalRpc, () => openSystemTerminal(updateCommand()));
   // The Tasks board's settings and its stop RPCs.
   registerTasksServer(server);
+  // Timeline translation helper RPCs and settings.
+  registerTimelineTranslation(server);
   // Each turn's token usage, kept on disk for the turn details.
   registerTurnUsageServer(server);
 
+  server.handle(installedEditorsRpc, async () => ({ apps: await installedEditors() }));
   server.handle(revealPathRpc, async (input) => {
     const resolved = await resolveSelector(input.path, input.cwd);
     if ("error" in resolved) return { revealed: null, error: resolved.error };
     const requested = resolved.path;
 
     const target = isAbsolute(requested) ? requested : resolve(input.cwd, requested);
+    let entry: Stats;
     try {
-      const entry = await stat(target);
-      openWithShell(target, entry);
+      entry = await stat(target);
+    } catch (error) {
+      return revealFailure(error);
+    }
+    // Folders and anything that would run keep the platform's reveal, whatever the setting.
+    let app: FileOpenApp = "system";
+    if (!entry.isDirectory() && !launches(target, entry)) {
+      try {
+        const settings = await preferences.read();
+        if (settings.status !== "ready") throw new Error("File open settings are unavailable");
+        app = settings.values.fileOpenApp;
+      } catch (error) {
+        return revealFailure(error, "settings_unavailable");
+      }
+      if (input.expectedApp !== undefined && input.expectedApp !== app) {
+        return { revealed: null, error: "File open setting has not synchronized; try again", errorKind: "settings_unsynced" as const };
+      }
+    }
+    try {
+      await (app === "system" ? openWithShell(target, entry) : openInEditor(app, target));
       return { revealed: target, error: null };
     } catch (error) {
-      return {
-        revealed: null,
-        error: error instanceof Error ? error.message : String(error),
-      };
+      const kind = error instanceof EditorUnavailableError ? "editor_unavailable" : error instanceof LaunchUnconfirmedError ? "launch_unconfirmed" : "launch_failed";
+      return revealFailure(error, kind, app);
     }
   });
 
@@ -592,7 +617,7 @@ export default function contribute(server: PluginServerContext) {
     return { bitmaps };
   });
 
-  // Debug only: answers `/bc-perf dump`. Idle until a client calls it.
+  // Debug only: answers `/bp-perf dump`. Idle until a client calls it.
   server.handle(perfDumpRpc, async (input) => {
     try {
       return { path: await writePerfDump(input), error: null };

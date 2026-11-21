@@ -430,9 +430,11 @@ interface FailureWatch {
  * A failed host's store is read again (`refresh`) after `REMOTE_RETRY_MS`,
  * then at doubling intervals. A refresh clears the store's error as it
  * starts, so a host stays listed until a retry lands, and the notice does
- * not blink with each attempt. A host whose error clears otherwise (the
- * board's own refresh) leaves the list; one that goes offline leaves it to
- * the away notice.
+ * not blink with each attempt. The store also refreshes itself to recover a
+ * lost list (`LIST_RECOVERY_DELAYS_MS`), and the board's own refresh reads
+ * it too: when the error clears that way, the watch joins that refresh (the
+ * store answers a second call with the one in flight) and keeps the host
+ * listed until it lands. One that goes offline leaves it to the away notice.
  */
 export function useRemoteReadFailures(remotes: readonly RemoteTasks[]): readonly FailedHost[] {
   const [failed, setFailed] = useState<readonly FailedHost[]>(NO_FAILED);
@@ -467,7 +469,8 @@ export function useRemoteReadFailures(remotes: readonly RemoteTasks[]): readonly
         const error = latest.current.find((entry) => entry.host.id === id)?.tasks.error ?? null;
         if (result === "failed" || (result === "done" && error !== null)) {
           if (watch.timer === null) schedule(id, watch);
-        } else if (result === "done") {
+        } else if (result === "done" || error === null) {
+          // Done, or let go with nothing failing: reconciling would join again.
           drop(id, watch);
           publish();
         } else {
@@ -492,7 +495,11 @@ export function useRemoteReadFailures(remotes: readonly RemoteTasks[]): readonly
             if (watch.timer === null && !watch.retrying) schedule(id, watch);
           }
         } else if (watch && !watch.retrying) {
-          drop(id, watch);
+          // A refresh not of this watch (the store's list recovery, the
+          // board's own) cleared the error: join it, so the host stays named
+          // until it lands rather than blinking off while it reads.
+          if (watch.timer !== null) clearTimeout(watch.timer);
+          retry(id, watch);
         }
       }
       publish();

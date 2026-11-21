@@ -15,7 +15,7 @@ vi.mock("react-native", async () => {
   const AppState = { currentState: "active", addEventListener: () => ({ remove() {} }) };
   return { ...rn, AppState, findNodeHandle: () => null, default: { ...rn.default, AppState } };
 });
-vi.mock("@getpaseo/plugin/client/react-native", async () => {
+vi.mock("@getpaseo/plugin/client/ui", async () => {
   const rn = await import("./helpers/rn-mock");
   const React = await import("react");
   type Props = Record<string, unknown> & { children?: React.ReactNode };
@@ -37,6 +37,7 @@ vi.mock("@getpaseo/plugin/client/react-native", async () => {
     TextInput: rn.TextInput,
     useToast: () => ({ show() {}, error() {} }),
     copyText: async () => {},
+    SidebarRow: (props: Record<string, unknown>) => React.createElement("SidebarRow", { label: props.label }),
   };
 });
 const fixture = vi.hoisted(() => ({ settings: null as Record<string, unknown> | null }));
@@ -78,10 +79,6 @@ const HOSTS = [
   { serverId: "srv-own", label: "This Mac", status: "online" },
   { serverId: "srv-remote", label: "remote-box", status: "online" },
 ];
-vi.mock("@getpaseo/plugin/client/ui", async () => {
-  const React = await import("react");
-  return { SidebarRow: (props: Record<string, unknown>) => React.createElement("SidebarRow", { label: props.label }) };
-});
 // Each host's store is stood in for by a fixed handle: the board's own through `useTasks`, the other's through the remote store calls.
 vi.mock("../../client/tasks/data", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../../client/tasks/data")>();

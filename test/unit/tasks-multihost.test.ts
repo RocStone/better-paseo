@@ -5,9 +5,9 @@
  */
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { PaseoApi } from "@getpaseo/client";
-import { filterLanes, remoteTasksSnapshot, setLastTurnLoader, setReadMarksLoader, setSubagentLoader, subscribeRemoteTasks, withSubagentCards, type TasksHandle } from "../../client/tasks/data";
+import { LIST_RECOVERY_DELAYS_MS, filterLanes, remoteTasksSnapshot, setLastTurnLoader, setReadMarksLoader, setSubagentLoader, subscribeRemoteTasks, withSubagentCards, type TasksHandle } from "../../client/tasks/data";
 import { REMOTE_RETRY_MS, awayNotice, boardHosts, hostMethods, hostNotice, mergeHostTasks, readHostApis, useMergedTasks, useRemoteReadFailures, useRemoteTasks, routedPaseo, scopedId, stampCard, unscopeId, type BoardHosts, type FailedHost, type HostSummary, type RemoteTasks } from "../../client/tasks/data/hosts";
-import { EMPTY_FILTERS, LANE_ORDER, remoteCard, type LaneId, type LaneModel, type TaskCard } from "../../client/tasks/model";
+import { EMPTY_FILTERS, LANE_ORDER, remoteCard, translationAgentOf, type LaneId, type LaneModel, type TaskCard } from "../../client/tasks/model";
 import { sampleCards } from "../../client/tasks/sample-cards";
 import { activeChips, buildFilterOptions, clearedParams } from "../../client/tasks/board/filter-options";
 import { EMPTY_PARAMS, activeFilterCount, decodeBoardParams, encodeBoardParams, resolveBoardParams } from "../../client/tasks/board/params";
@@ -389,6 +389,43 @@ describe("remote store", () => {
       vi.useRealTimers();
     }
   });
+
+  it("hides another host's background agents as the board's own, and keeps their parent running (Paseo 0.16)", async () => {
+    setLastTurnLoader(async () => []);
+    setSubagentLoader(async () => ({ version: "v", subagents: [] }));
+    setReadMarksLoader(async () => []);
+    const fake = createFakePaseo({
+      agents: [
+        makeAgent({ id: "remote-parent", workspaceId: "ws", status: "idle", updatedAt: at(10), lastUserMessageAt: at(10) }),
+        makeAgent({ id: "remote-helper", workspaceId: "ws", status: "running", background: true, updatedAt: at(20), labels: { "paseo.parent-agent-id": "remote-parent" } }),
+        makeAgent({ id: "remote-orphan", workspaceId: "ws", status: "running", background: true, updatedAt: at(21) }),
+        makeAgent({ id: "remote-hidden-ws", workspaceId: "bg", status: "running", updatedAt: at(22) }),
+      ],
+      workspaces: [makeWorkspace({ id: "ws", projectId: "prj", name: "app" }), makeWorkspace({ id: "bg", projectId: "prj", name: "helpers", background: true })],
+    });
+    vi.useFakeTimers();
+    const release = subscribeRemoteTasks(fake.paseo, () => {}, true);
+    try {
+      await vi.advanceTimersByTimeAsync(0);
+      const snapshot = remoteTasksSnapshot(fake.paseo, { doneWindow: "all", includeDone: true });
+      const shown = LANE_ORDER.flatMap((lane) => snapshot.lanes[lane].cards.map((item) => item.id));
+      expect(shown).toEqual(["remote-parent"]);
+      expect(snapshot.lanes.running.cards[0]?.waitingOnSubtasks).toBe(true);
+      expect(snapshot.lanes.running.cards[0]?.children.map((child) => child.id)).toContain("remote-helper");
+    } finally {
+      release();
+      vi.useRealTimers();
+    }
+  });
+});
+
+describe("translationAgentOf", () => {
+  it("translates with the card's agent, a subtask's parent, and never with another host's", () => {
+    const card = sampleCards(Date.parse("2026-10-20T12:00:00Z"))[0]!;
+    expect(translationAgentOf(card)).toBe(card.id);
+    expect(translationAgentOf({ ...card, subagent: { subtitle: null }, parent: { ...card.parent!, id: "parent" } as TaskCard["parent"] })).toBe("parent");
+    expect(translationAgentOf(stampCard(card, { id: "srv-remote", label: "remote-box", remote: true }))).toBeUndefined();
+  });
 });
 
 describe("a remote host's failed read, while the host stays online", () => {
@@ -436,7 +473,7 @@ describe("a remote host's failed read, while the host stays online", () => {
   }
   const statusList = (options: { filter?: { statuses?: string[] } }) => options.filter?.statuses?.includes("running") === true;
 
-  it("names the host when its first read fails, and drops it once a retry reads its tasks", async () => {
+  it("names the host when its first read fails, and drops it once the store's recovery reads its tasks", async () => {
     vi.useFakeTimers();
     const fake = remoteFake();
     fake.failNextAgentList(statusList, "remote list failed");
@@ -446,10 +483,11 @@ describe("a remote host's failed read, while the host stays online", () => {
       expect(probe.seen.tasks[0]!.tasks.error).toBe("remote list failed");
       expect(probe.cards()).toEqual([]);
       expect(probe.seen.failed).toEqual([REMOTE]);
-      // Nothing reads it again before the retry is due.
-      await settle(REMOTE_RETRY_MS - 1);
+      const firstNamed = probe.seen.failures.findIndex((failed) => failed.length > 0);
+      // Nothing reads it again before the store's own recovery is due.
+      await settle(LIST_RECOVERY_DELAYS_MS[0]! - 1);
       expect(probe.seen.failed).toEqual([REMOTE]);
-      // The retry is slow to answer: its refresh has cleared the store's error, and the host stays named until it lands.
+      // The recovery is slow to answer: its refresh has cleared the store's error, and the host stays named until it lands.
       const answer = fake.holdReady();
       await settle(1);
       expect(probe.seen.tasks[0]!.tasks.error).toBeNull();
@@ -459,12 +497,20 @@ describe("a remote host's failed read, while the host stays online", () => {
       expect(probe.seen.tasks[0]!.tasks.error).toBeNull();
       expect(probe.cards()).toEqual(["remote-run"]);
       expect(probe.seen.failed).toEqual([]);
+      // The notice went once, when the read landed, and the board's own retry has nothing left to read.
+      const named = probe.seen.failures.slice(firstNamed);
+      const cleared = named.findIndex((failed) => failed.length === 0);
+      expect(named.slice(cleared).every((failed) => failed.length === 0)).toBe(true);
+      const lists = () => fake.calls.filter((call) => call.method === "agents.list" && statusList(call.input as never)).length;
+      const before = lists();
+      await settle(REMOTE_RETRY_MS * 4);
+      expect(lists()).toBe(before);
     } finally {
       probe.unmount();
     }
   });
 
-  it("keeps the host named through a failed retry, without a blink, and backs off before the next", async () => {
+  it("keeps the host named through a failed recovery, without a blink, and adds no read of its own sooner", async () => {
     vi.useFakeTimers();
     const fake = remoteFake();
     fake.failNextAgentList(statusList, "remote list failed");
@@ -474,16 +520,17 @@ describe("a remote host's failed read, while the host stays online", () => {
       await settle();
       expect(probe.seen.failed).toEqual([REMOTE]);
       const firstNamed = probe.seen.failures.findIndex((failed) => failed.length > 0);
-      await settle(REMOTE_RETRY_MS);
+      await settle(LIST_RECOVERY_DELAYS_MS[0]!);
       expect(probe.seen.tasks[0]!.tasks.error).toBe("remote list failed again");
       expect(probe.seen.failed).toEqual([REMOTE]);
       const lists = () => fake.calls.filter((call) => call.method === "agents.list" && statusList(call.input as never)).length;
       const before = lists();
-      // The next retry waits twice as long.
-      await settle(REMOTE_RETRY_MS);
+      // The board's retry joins the store's recovery and reads nothing sooner; that recovery then reads it.
+      await settle(LIST_RECOVERY_DELAYS_MS[0]! - 1);
       expect(lists()).toBe(before);
-      await settle(REMOTE_RETRY_MS);
-      expect(lists()).toBe(before + 1);
+      expect(probe.seen.failed).toEqual([REMOTE]);
+      await settle(LIST_RECOVERY_DELAYS_MS[1]!);
+      expect(lists()).toBeGreaterThan(before);
       expect(probe.cards()).toEqual(["remote-run"]);
       expect(probe.seen.failed).toEqual([]);
       // From the first failure to the recovery, the notice never went away in between.

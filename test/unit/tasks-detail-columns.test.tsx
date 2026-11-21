@@ -20,15 +20,18 @@ vi.mock("react-native", async () => {
     </rn.ScrollView>,
   };
 });
-vi.mock("@getpaseo/plugin/client", () => ({ useRpc: () => vi.fn() }));
-vi.mock("@getpaseo/plugin/client/react-native", async () => {
+vi.mock("@getpaseo/plugin/client", () => {
+  const paseo = {};
+  return { useRpc: () => vi.fn(), usePaseo: () => paseo };
+});
+vi.mock("@getpaseo/plugin/client/ui", async () => {
   const rn = await import("react-native");
   return { Icon: () => null, ScrollView: (props: React.ComponentProps<typeof rn.ScrollView>) => <rn.ScrollView {...props} />, copyText: vi.fn(), useToast: () => ({ show() {}, error() {} }) };
 });
 vi.mock("../../client/components/markdown/markdown-view", () => ({ MarkdownView: () => null }));
 
 import { TaskDetailCards, type TaskDetailCardsProps } from "../../client/tasks/cards/detail-cards";
-import { Icon, ScrollView } from "@getpaseo/plugin/client/react-native";
+import { Icon, ScrollView } from "@getpaseo/plugin/client/ui";
 import { taskTokens } from "../../client/tasks/cards/tokens";
 import { permissionButtons } from "../../client/tasks/actions";
 import { useLastMessage } from "../../client/tasks/data/last-message";
@@ -36,7 +39,10 @@ import { resetSectionChoices } from "../../client/tasks/cards/detail-collapse";
 import { BOARD_STRINGS } from "../../client/tasks/board/strings";
 import { cardStrings } from "../../client/tasks/cards/strings";
 import { previewSampleCards } from "../../client/tasks/sample-cards";
+import { asExitPlan } from "./helpers/plan-request";
 import { MarkdownView } from "../../client/components/markdown/markdown-view";
+import { SelectionTranslationScope } from "../../client/translation/ui";
+import { InlineTranslation } from "../../client/translation/inline";
 import { TasksTypography, TasksTypographyScale, HOST_FONT } from "../../client/tasks/typography";
 import { variantMetrics } from "../../client/components/markdown/render/styles";
 import { measureHostTree } from "./helpers/yoga-host-layout";
@@ -74,11 +80,94 @@ function props(children: boolean): TaskDetailCardsProps {
 function host(root: ReactTestInstance, id: string) {
   return root.find((node) => typeof node.type === "string" && node.props.testID === id);
 }
+function texts(root: ReactTestInstance): string[] {
+  return root.findAll((node) => (node.type as unknown) === "Text").flatMap((node) => node.children.filter((child): child is string => typeof child === "string"));
+}
 function order(root: ReactTestInstance) {
   return root.findAll((node) => typeof node.type === "string" && ORDER.includes(node.props.testID)).map((node) => node.props.testID);
 }
 
 describe("details columns", () => {
+  it("matches the translation button's icon and hover feedback to copy", async () => {
+    const message = { prompt: { state: "ready" as const, text: "Reply" }, load() {} };
+    await act(async () => { renderer = TestRenderer.create(<TaskDetailCards {...props(false)} lastMessage={message} translationAgentId="session-1" columns={false} tabs />); });
+    const translate = host(renderer!.root, "detail-message-translate");
+    const copy = host(renderer!.root, "detail-message-copy");
+    await act(async () => { translate.props.onHoverIn({}); copy.props.onHoverIn({}); });
+    const translateFill = host(renderer!.root, "detail-message-translate-fill");
+    const copyFill = host(renderer!.root, "detail-message-copy-fill");
+    expect(translateFill.props.style).toEqual(copyFill.props.style);
+    expect(translateFill.props.style).toMatchObject({ width: 24, height: 24, borderRadius: 6 });
+    expect(translateFill.findByType(Icon).props.size).toBe(copyFill.findByType(Icon).props.size);
+    expect(translate.props.style).toEqual(copy.props.style);
+    expect(translate.props.style).toMatchObject({ width: 28, height: 28 });
+    await act(async () => translate.props.onPress({ stopPropagation() {} }));
+    expect(host(translateFill, "detail-message-translate-spinner")).toBeDefined();
+    expect(renderer!.root.findAll((node) => node.props.testID === "inline-translation-status")).toHaveLength(0);
+  });
+
+  it("opens a closed section when its message is translated, where the result and errors show", async () => {
+    const message = { prompt: { state: "ready" as const, text: "Reply" }, load() {} };
+    await act(async () => { renderer = TestRenderer.create(<TaskDetailCards {...props(false)} lastMessage={message} translationAgentId="session-1" columns={false} tabs />); });
+    const expanded = () => host(renderer!.root, "detail-message-heading").props.accessibilityState.expanded;
+    if (expanded()) await act(async () => host(renderer!.root, "detail-message-heading").props.onPress({}));
+    expect(expanded()).toBe(false);
+    await act(async () => host(renderer!.root, "detail-message-translate").props.onPress({ stopPropagation() {} }));
+    expect(expanded()).toBe(true);
+    // A later press on the active translation (Retry, Show original) leaves the section as the reader set it.
+    await act(async () => host(renderer!.root, "detail-message-heading").props.onPress({}));
+    expect(expanded()).toBe(false);
+    await act(async () => host(renderer!.root, "detail-message-translate").props.onPress({ stopPropagation() {} }));
+    expect(expanded()).toBe(false);
+  });
+
+  it.each(["en", "zh"] as const)("places %s message times beside their titles and keeps actions at the right", async (language) => {
+    const message = { prompt: { state: "ready" as const, text: "Message", timestamp: new Date(NOW - 60_000).toISOString() }, load() {} };
+    await act(async () => { renderer = TestRenderer.create(<TaskDetailCards {...props(false)} language={language} firstPrompt={message} humanMessage={{ ...message, prompt: { ...message.prompt, text: "Follow-up" } }} lastMessage={message} translationAgentId="session-1" columns={false} tabs />); });
+    for (const id of ["detail-prompt", "detail-human", "detail-message"]) {
+      const heading = host(renderer!.root, `${id}-heading`);
+      const title = host(renderer!.root, `${id}-heading-title`);
+      const time = host(renderer!.root, `${id}-heading-time`);
+      const copy = host(renderer!.root, `${id}-copy`);
+      expect(texts(time).join("")).toMatch(/^· /);
+      for (const width of [240, 320, 600]) {
+        const frames = measureHostTree(heading, { width });
+        const titleFrame = frames.get(title)!;
+        const timeFrame = frames.get(time)!;
+        const copyFrame = frames.get(copy)!;
+        expect(timeFrame.left - (titleFrame.left + titleFrame.width)).toBeCloseTo(6, 0);
+        expect(copyFrame.left).toBeGreaterThanOrEqual(timeFrame.left + timeFrame.width);
+        expect(copyFrame.left + copyFrame.width).toBeCloseTo(width - 28, 0);
+      }
+    }
+  });
+
+  it("scopes first, human and reply text to the real session, keeping previews unscoped", async () => {
+    const base = props(false);
+    const messages = {
+      firstPrompt: { prompt: { state: "ready" as const, text: "First" }, load() {} },
+      humanMessage: { prompt: { state: "ready" as const, text: "Follow-up" }, load() {} },
+      lastMessage: { prompt: { state: "ready" as const, text: "Reply" }, load() {} },
+    };
+    await act(async () => { renderer = TestRenderer.create(<TaskDetailCards {...base} {...messages} columns={false} tabs />); });
+    expect(renderer!.root.findAllByType(SelectionTranslationScope)).toHaveLength(0);
+    await act(async () => { renderer!.update(<TaskDetailCards {...base} {...messages} translationAgentId="session-1" columns={false} tabs />); });
+    const scopes = renderer!.root.findAllByType(SelectionTranslationScope);
+    expect(scopes.map((scope) => ({ agentId: scope.props.agentId, kind: scope.props.kind }))).toEqual([
+      { agentId: "session-1", kind: "user_message" },
+      { agentId: "session-1", kind: "user_message" },
+      { agentId: "session-1", kind: "assistant_message" },
+    ]);
+    expect(scopes[0]!.props.streaming).toBe(false);
+    expect(scopes[1]!.props.streaming).toBe(false);
+    const buttons = renderer!.root.findAllByType(InlineTranslation);
+    expect(buttons.map((node) => [node.props.agentId, node.props.kind, node.props.text])).toEqual([
+      ["session-1", "user_message", "First"],
+      ["session-1", "user_message", "Follow-up"],
+      ["session-1", "assistant_message", "Reply"],
+    ]);
+  });
+
   it.each([["zh", "基本信息", "消息"], ["en", "Info", "Messages"]] as const)("keeps %s tab labels unchanged when search matches both pages", async (language, info, messages) => {
     const base = props(false);
     await act(async () => {
@@ -389,7 +478,7 @@ describe("details columns", () => {
     });
     await act(async () => messages.props.onLayout());
     expect(scrollTo).toHaveBeenLastCalledWith({ y: 320, animated: false });
-    expect(host(root, "detail-prompt-text").props.style).toMatchObject({ overflow: "hidden" });
+    expect(host(root, "detail-prompt-text").props.style).toMatchObject({ overflow: os === "web" ? "hidden" : "scroll" });
     expect(host(root, "detail-action-bar")).toBe(bar);
     scrollTo.mockClear();
     await act(async () => {
@@ -452,14 +541,48 @@ describe("details columns", () => {
     await act(async () => withUnread[0]!.props.onPress());
     expect(markUnread.press).toHaveBeenCalledWith(card);
   });
-  it("keeps permission and stop actions in the footer", async () => {
+  // Every request kind, a real ExitPlanMode among them, answers in its section
+  // as a tool permission does, with Stop (and Open, but beside "Answer") above it.
+  it.each(["plan", "plan-resume", "mode", "other"] as const)("answers a %s request in its section and keeps Stop on the controls row above it", async (kind) => {
+    const input = previewSampleCards(NOW).find((item) => item.id === "sample-input")!;
+    const card = kind === "plan" || kind === "plan-resume" ? asExitPlan(input, { resume: kind === "plan-resume" }) : { ...input, permission: { ...input.permission!, kind, actions: [] } };
+    const stop = vi.fn();
+    const onPermission = vi.fn();
+    const buttons = permissionButtons(card.permission!, "en", true);
+    await act(async () => { renderer = TestRenderer.create(<TaskDetailCards {...props(false)} card={card} columns={false} tabs onOpen={() => {}} stop={{ phase: "idle", onPress: stop }} permissionButtons={buttons} onPermission={onPermission} />); });
+    const root = renderer!.root;
+    expect(root.findAll((node) => node.props.testID === "detail-action-bar")).toHaveLength(0);
+    expect(host(root, "detail-question-section").props.style).toMatchObject({ borderTopWidth: 0.5 });
+    const answers = host(host(root, "detail-question-section"), "detail-permission-actions").findAll((node) => typeof node.type === "string" && node.props.accessibilityRole === "button");
+    expect(answers.map((node) => node.props.accessibilityLabel)).toEqual({
+      plan: ["Reject", "Implement"], "plan-resume": ["Reject", "Implement", "Implement with Bypass"], mode: ["Allow", "Deny"], other: ["Answer"],
+    }[kind]);
+    // A plan reads as one, not as the tool that asks for it.
+    if (kind !== "mode" && kind !== "other") expect(texts(host(root, "detail-permission"))).toContain("Plan");
+    if (kind !== "mode" && kind !== "other") expect(texts(host(root, "detail-permission"))).not.toContain("ExitPlanMode");
+    const controls = host(root, "detail-question-controls");
+    expect(controls.findAll((node) => typeof node.type === "string" && node.props.accessibilityRole === "button").map((node) => node.props.testID)).toEqual(kind === "other" ? ["detail-bar-stop"] : ["detail-bar-stop", "detail-bar-open"]);
+    for (const [index, answer] of answers.entries()) {
+      await act(async () => answer.props.onPress());
+      expect(onPermission).toHaveBeenLastCalledWith(buttons[index]);
+    }
+    await act(async () => host(controls, "detail-bar-stop").props.onPress());
+    expect(stop).toHaveBeenCalledOnce();
+  });
+  it("answers a tool permission in its section and keeps Stop on the controls row above it", async () => {
     const card = previewSampleCards(NOW).find((item) => item.id === "sample-input")!;
     const stop = vi.fn();
-    await act(async () => { renderer = TestRenderer.create(<TaskDetailCards {...props(false)} card={card} columns={false} tabs onOpen={() => {}} stop={{ phase: "idle", onPress: stop }} permissionButtons={permissionButtons(card.permission!, "en")} onPermission={() => {}} />); });
+    const onPermission = vi.fn();
+    await act(async () => { renderer = TestRenderer.create(<TaskDetailCards {...props(false)} card={card} columns={false} tabs onOpen={() => {}} stop={{ phase: "idle", onPress: stop }} permissionButtons={permissionButtons(card.permission!, "en")} onPermission={onPermission} />); });
     const root = renderer!.root;
-    expect(host(root, "detail-permission").findAll((node) => node.props.testID === "detail-permission-actions")).toHaveLength(0);
-    expect(host(root, "detail-action-bar").findAll((node) => node.props.accessibilityRole === "button").length).toBeGreaterThan(1);
-    await act(async () => host(root, "detail-bar-stop").props.onPress());
+    // As a question's: Allow and Deny under the request, no bottom bar.
+    const answers = host(root, "detail-permission-actions").findAll((node) => typeof node.type === "string" && node.props.accessibilityRole === "button");
+    expect(answers.map((node) => node.props.accessibilityLabel)).toEqual(["Allow", "Deny"]);
+    expect(root.findAll((node) => node.props.testID === "detail-action-bar")).toHaveLength(0);
+    expect(host(root, "detail-question-section").props.style).toMatchObject({ borderTopWidth: 0.5 });
+    await act(async () => answers[1]!.props.onPress());
+    expect(onPermission).toHaveBeenCalledWith(expect.objectContaining({ kind: "respond", action: expect.objectContaining({ behavior: "deny" }) }));
+    await act(async () => host(host(root, "detail-question-controls"), "detail-bar-stop").props.onPress());
     expect(stop).toHaveBeenCalledOnce();
   });
   it("shows all three messages and remembers a manually collapsed section", async () => {
@@ -489,7 +612,7 @@ describe("details columns", () => {
       return <TaskDetailCards {...props(false)} columns={false} tabs firstPrompt={{ prompt: { state: "ready", text: first }, load() {} }} humanMessage={{ prompt: { state: "ready", text: human, position: { epoch: "epoch", seq: 0 } }, load() {} }} lastMessage={lastMessage} />;
     }
     await act(async () => { renderer = TestRenderer.create(<LiveDetails />); });
-    expect(host(renderer!.root, "detail-prompt-text").props.style).toMatchObject({ overflow: "hidden" });
+    expect(host(renderer!.root, "detail-prompt-text").props.style).toMatchObject({ overflow: "scroll" });
     expect(host(renderer!.root, "detail-prompt-more").props.accessibilityState.expanded).toBe(false);
     for (const id of ["detail-human", "detail-message"]) {
       expect(host(renderer!.root, `${id}-text`).props.style).toBeNull();
@@ -502,7 +625,7 @@ describe("details columns", () => {
     expect(host(renderer!.root, "detail-message-text").props.style).toBeNull();
     expect(refetch).toHaveBeenCalledOnce();
     await act(async () => host(renderer!.root, "detail-message-more").props.onPress());
-    expect(host(renderer!.root, "detail-message-text").props.style).toMatchObject({ overflow: "hidden" });
+    expect(host(renderer!.root, "detail-message-text").props.style).toMatchObject({ overflow: "scroll" });
   });
   it("keeps usage above activity and both expanded for failed tasks", async () => {
     const card = previewSampleCards(NOW).find((item) => item.id === "sample-failed")!;
@@ -640,7 +763,7 @@ describe("detail message times", () => {
     return root.findAll((node) => (node.type as unknown) === "Text").map((node) => node.props.children);
   }
 
-  it.each(["web", "ios", "android"])("shows each message's local time on the right, including when folded, on %s", async (os) => {
+  it.each(["web", "ios", "android"])("shows each message's local time beside its title, including when folded, on %s", async (os) => {
     vi.stubGlobal("__rnMockOS", os);
     const first = new Date(NOW);
     first.setHours(8, 13, 7, 0);
@@ -663,7 +786,7 @@ describe("detail message times", () => {
           ["detail-prompt", words.prompt, "08:13", `${day(first)} 08:13:07`],
           ["detail-message", words.message, `${last.getMonth() + 1}/${last.getDate()} 21:47`, `${day(last)} 21:47:52`],
         ] as const) {
-          expect(labels(messageHeading(root, id))).toEqual([title, time]);
+          expect(labels(messageHeading(root, id))).toEqual([title, `· ${time}`]);
           const stamp = messageHeading(root, id).findAll((node) => (node.type as unknown) === "Text")[1]!;
           expect(stamp.props.numberOfLines).toBe(1);
           expect(stamp.props.dataSet?.bctip).toBe(os === "web" ? fullTime : undefined);
@@ -672,7 +795,7 @@ describe("detail message times", () => {
           expect(StyleSheet.flatten(stamp.props.style)).toMatchObject({ flexShrink: 1, fontVariant: ["tabular-nums"] });
           await act(async () => heading(root, id).props.onPress());
           expect(heading(root, id).props.accessibilityState.expanded).toBe(false);
-          expect(labels(messageHeading(root, id))).toEqual([title, time]);
+          expect(labels(messageHeading(root, id))).toEqual([title, `· ${time}`]);
           const foldedStamp = messageHeading(root, id).findAll((node) => (node.type as unknown) === "Text")[1]!;
           expect(foldedStamp.props.dataSet?.bctip).toBe(os === "web" ? fullTime : undefined);
           expect(heading(root, id).props.dataSet?.bctip).toBe(os === "web" ? words.expand(title) : undefined);

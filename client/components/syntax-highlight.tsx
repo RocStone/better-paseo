@@ -1,6 +1,6 @@
 import React, { memo, useCallback, useEffect, useRef, useState, useMemo, type ReactNode } from "react";
 import { Platform, View, Text, Pressable, StyleSheet } from "react-native";
-import { Icon } from "@getpaseo/plugin/client/react-native";
+import { Icon } from "@getpaseo/plugin/client/ui";
 import type { StyleProp, TextProps, TextStyle } from "react-native";
 import { surfaceProps } from "./view-props";
 import { radiusV2, space, type ExtendedThemeTokens } from "./theme-tokens";
@@ -13,6 +13,8 @@ import { useHighlightedLines } from "../highlight";
 import { perfCount } from "../debug/perf";
 import { CopyButton } from "../ui/copy-button";
 import { ToolbarButton } from "../ui/toolbar-button";
+import { useHover } from "../ui/use-hover";
+import { iconHoverSize } from "../ui/icon-hover-size";
 import { SelectableSpan } from "../ui/prose-text";
 import { useZoomedTokens } from "../ui/text-zoom";
 import type { HighlightLine, HighlightToken } from "../../shared/highlight-rpc";
@@ -220,6 +222,19 @@ function patchedFileIsCode(filename?: string): boolean {
 
 /** How far into a block a diff must announce itself before it reads as code. */
 const DIFF_SCAN_LINES = 8;
+
+const codeBlockMargin = (compact: boolean) => compact ? space.xs : space.sm;
+
+/**
+ * The center of a framed block's first line, from the block's top margin: its
+ * header row when it has one, or else its first line of code. Mirrors the
+ * `container`, `header` and `codeArea` styles of `SyntaxHighlightBlock`.
+ */
+export function codeBlockFirstLineCenter(code: string, language: string, compact: boolean, monoLineHeight: number): number {
+  const lines = code.trimEnd().split("\n");
+  const header = codeLanguageLabel(language === "diff" || looksLikeUnifiedDiff(lines) ? "diff" : language) !== "";
+  return codeBlockMargin(compact) + (header ? HEADER_HEIGHT / 2 : space.sm + monoLineHeight / 2);
+}
 
 /**
  * Whether a block is a unified diff whatever its label says. A tool labels a
@@ -565,7 +580,7 @@ export function SyntaxHighlightBlock({
               backgroundColor: tokens.v2.surfaceCode,
               borderRadius: radiusV2.block,
               overflow: "hidden",
-              marginVertical: compact ? space.xs : space.sm,
+              marginVertical: codeBlockMargin(compact),
             },
         header: {
           height: HEADER_HEIGHT,
@@ -873,7 +888,7 @@ export function codeLanguageLabel(language: string | undefined, filename?: strin
   return LANGUAGE_LABELS[key] ?? key;
 }
 
-/** A 24pt icon button for the block's Wrap toggle. */
+/** A 24pt icon button for the block's Wrap toggle. The glyph already shows which state is on, so the resting fill stays empty. */
 function ToggleIconButton({
   icon,
   label,
@@ -887,6 +902,9 @@ function ToggleIconButton({
   onPress(): void;
   tokens: ExtendedThemeTokens;
 }) {
+  const { hovered, hoverProps } = useHover();
+  const iconSize = TYPE.button.size + 1;
+  const fill = iconHoverSize(iconSize);
   return (
     <Pressable
       accessibilityRole="button"
@@ -895,12 +913,19 @@ function ToggleIconButton({
       aria-pressed={active}
       hitSlop={4}
       onPress={onPress}
-      style={({ pressed }) => [
-        toggleStyles.button,
-        pressed && { backgroundColor: tokens.v2.surface2 },
-      ]}
+      {...hoverProps}
+      style={toggleStyles.button}
     >
-      <Icon name={icon} size={TYPE.button.size + 1} color={tokens.foregroundMuted} />
+      {({ pressed }) => (
+        <View pointerEvents="none" testID={hovered || pressed ? "block-icon-hover" : undefined}
+          style={hovered || pressed ? {
+            width: fill, height: fill, borderRadius: fill / 2,
+            alignItems: "center", justifyContent: "center",
+            backgroundColor: tokens.v2.surface2,
+          } : toggleStyles.icon}>
+          <Icon name={icon} size={iconSize} color={tokens.foregroundMuted} />
+        </View>
+      )}
     </Pressable>
   );
 }
@@ -909,7 +934,13 @@ const toggleStyles = StyleSheet.create({
   button: {
     width: 24,
     height: 24,
-    borderRadius: radiusV2.chip,
+    borderRadius: 12,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  icon: {
+    width: TYPE.button.size + 1,
+    height: TYPE.button.size + 1,
     alignItems: "center",
     justifyContent: "center",
   },

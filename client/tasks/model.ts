@@ -146,10 +146,18 @@ export interface TaskPermission {
   requestId: string;
   kind: PermissionKind;
   title: string;
-  /** The command or file the request is about, one line; null when none. */
+  /** The command or file the request is about, one line; null when none. A plan's is its title. */
   summary: string | null;
+  /** A plan's whole text, in Markdown, for "View plan"; absent for every other request. */
+  body?: string;
   questions?: import("./question-form").TaskQuestion[];
   name?: string;
+  /**
+   * A question's tool call in the timeline: Claude's `metadata.toolUseId`,
+   * else the request id past Codex's `permission-` prefix. The question
+   * dialog reads the text the agent wrote right before that row.
+   */
+  callId?: string;
   /** The request's own buttons; empty means draw Allow and Deny. */
   actions: TaskPermissionAction[];
   remaining: number;
@@ -231,6 +239,17 @@ export function remoteCard(card: { host?: TaskHost }): boolean {
   return card.host?.remote === true;
 }
 
+/**
+ * The agent whose conversation translates this card's text: a subtask's
+ * parent, else the card's own. None for another host's card: the plugin's
+ * server translates with the source agent's model on its own daemon, which
+ * does not hold that agent.
+ */
+export function translationAgentOf(card: Pick<TaskCard, "id" | "subagent" | "parent" | "host">): string | undefined {
+  if (remoteCard(card)) return undefined;
+  return card.subagent ? card.parent?.id : card.id;
+}
+
 export interface TaskCard {
   availability?: TaskAvailability;
   id: string;
@@ -260,6 +279,8 @@ export interface TaskCard {
   usage: TaskUsage | null;
   /** `lastError`, or "Stopped manually" after a stop from the board; review and done lanes only. */
   error: string | null;
+  /** Latest known turn or provider-subagent failure, in epoch milliseconds. */
+  errorOccurredAt?: number;
   /** Stopped from the board and not run since: drawn with the solid stop square. */
   stoppedManually?: boolean;
   permission: TaskPermission | null;

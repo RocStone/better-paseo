@@ -1,5 +1,8 @@
 import { defineSettings } from "@getpaseo/plugin";
 import { z } from "zod";
+import { FILE_OPEN_APPS } from "./file-open-apps";
+
+export { FILE_OPEN_APPS, type FileOpenApp } from "./file-open-apps";
 
 /**
  * Presentation preferences, stored by the daemon (plan §11.6: configuration
@@ -32,6 +35,7 @@ const LEGACY_INLINE_CODE_COLORS: Readonly<Record<string, (typeof INLINE_CODE_COL
 
 export const UI_FONTS = ["host", "inter", "system"] as const;
 export const MONO_FONTS = ["host", "custom"] as const;
+export const TIMELINE_LEVELS = ["simple", "standard", "detailed"] as const;
 export const TOOL_DETAILS = ["collapsed", "expand-failed"] as const;
 export const PATH_DISPLAYS = ["relative", "absolute"] as const;
 export const ROW_LABEL_STYLES = ["icon", "label", "both"] as const;
@@ -136,6 +140,7 @@ export const preferencesSchema = z.preprocess((raw) => migrateHoverDelay(migrate
     .catch(BLOCK_FONT_SIZE_DEFAULT),
   toolDetail: z.enum(TOOL_DETAILS).catch("collapsed"),
   pathDisplay: z.enum(PATH_DISPLAYS).catch("relative"),
+  fileOpenApp: z.enum(FILE_OPEN_APPS).catch("system"),
   hoverPreview: flag(true),
   hoverDelaySeconds: z
     .number()
@@ -153,9 +158,11 @@ export const preferencesSchema = z.preprocess((raw) => migrateHoverDelay(migrate
   previewLineNumbers: flag(true),
   previewStripes: flag(true),
   chatEnabled: flag(true),
+  timelineLevel: z.enum(TIMELINE_LEVELS).catch("standard"),
   enhancedUserBubble: flag(false),
   selectionActions: flag(true),
   assistantMarkdown: flag(true),
+  liveUiReplies: flag(false),
   markdownVariant: z.enum(MARKDOWN_VARIANTS_STORED).catch("document"),
   rowLabelStyle: z.enum(ROW_LABEL_STYLES).catch("icon"),
   compactRowSpacing: flag(true),
