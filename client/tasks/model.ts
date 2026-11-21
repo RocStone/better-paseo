@@ -239,6 +239,17 @@ export function remoteCard(card: { host?: TaskHost }): boolean {
   return card.host?.remote === true;
 }
 
+/**
+ * The agent whose conversation translates this card's text: a subtask's
+ * parent, else the card's own. None for another host's card: the plugin's
+ * server translates with the source agent's model on its own daemon, which
+ * does not hold that agent.
+ */
+export function translationAgentOf(card: Pick<TaskCard, "id" | "subagent" | "parent" | "host">): string | undefined {
+  if (remoteCard(card)) return undefined;
+  return card.subagent ? card.parent?.id : card.id;
+}
+
 export interface TaskCard {
   availability?: TaskAvailability;
   id: string;

@@ -13,7 +13,7 @@ import { usePressCue } from "../cards/action-pressable";
 import { hoverFill } from "../hover-fill";
 import { HoverControl } from "../hover-control";
 import { BrandMark, DETAIL_CARD, DetailActionBar, DetailCard, detailGutter, detailScrollProps, outsideIndicator, ProjectIcon, requestInSection, StatusIcon, TagMark, TaskDetailCards, taskTokens, tildePath, type DetailNotice, type TaskTokens } from "../cards";
-import { LANE_STATUS, remoteCard, turnRunning, type LaneId, type TaskCard } from "../model";
+import { LANE_STATUS, remoteCard, translationAgentOf, turnRunning, type LaneId, type TaskCard } from "../model";
 import { activeStopChildren } from "../actions/stop-targets";
 import { SheetFoot, SheetScrollRoom } from "../sheet-motion";
 import { useFirstPrompt } from "../data/first-prompt";
@@ -252,7 +252,7 @@ function SidebarDetailsView(props: SidebarDetailsProps) {
     <PreferenceSyncSlot />
     <TaskDetailCards
       key={props.tabs ? card.id : undefined}
-      translationAgentId={card.subagent ? card.parent?.id : card.id}
+      translationAgentId={translationAgentOf(card)}
       {...detailActions(board, card)}
       searchQuery={board.params.query}
       theme={props.theme}

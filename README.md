@@ -717,8 +717,8 @@ When Paseo is connected to more than one host (Paseo 0.16 or later), the board s
 every online host in the same lanes and order. A card from another host carries a small badge with
 that host's name, as Paseo's sidebar does; a filter by host joins the others. Open, preview and
 Archive act on the card's own host, and opening a remote card opens that agent in Paseo the way the
-sidebar does, which also marks it read there. Stop, Mark as read, Mark unread, Unarchive and the
-title actions run through this plugin's server, which reaches only its own host, so
+sidebar does, which also marks it read there. Stop, Mark as read, Mark unread, Unarchive, the
+title actions and translation run through this plugin's server, which reaches only its own host, so
 they are left out on another host's card. When a host goes offline or is reconnecting, its cards leave the board
 and one quiet line names it; they return when it is back. When a host stays online but its tasks
 cannot be read, the same line says so, since its cards may be missing or out of date; the board

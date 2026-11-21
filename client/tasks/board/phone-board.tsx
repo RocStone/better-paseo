@@ -22,7 +22,7 @@ import { EdgeActionBar, StatusIcon, TaskDetailCards, createDetailChrome, request
 import { panelChrome } from "../cards/panel";
 import { cardStrings } from "../cards/strings";
 import { ActionPressable } from "../cards/action-pressable";
-import { LANE_STATUS, isHistoryLane, turnRunning, type LaneId, type LaneModel, type TaskCard } from "../model";
+import { LANE_STATUS, isHistoryLane, translationAgentOf, turnRunning, type LaneId, type LaneModel, type TaskCard } from "../model";
 import { activeStopChildren } from "../actions/stop-targets";
 import { useReducedMotion } from "../../ui/use-reduced-motion";
 import { holdHostGestures } from "../../ui/hold-host-gestures";
@@ -727,7 +727,7 @@ function DetailsSheetBodyView(props: DetailsSheetBodyProps) {
         <TranslationSettingsParentCloseContext.Provider value={props.onCloseSheet}>
         <TaskDetailCards
           key={card.id}
-          translationAgentId={card.subagent ? card.parent?.id : card.id}
+          translationAgentId={translationAgentOf(card)}
           searchQuery={board.params.query}
           card={card}
           theme={theme}

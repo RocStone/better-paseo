@@ -7,7 +7,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { PaseoApi } from "@getpaseo/client";
 import { LIST_RECOVERY_DELAYS_MS, filterLanes, remoteTasksSnapshot, setLastTurnLoader, setReadMarksLoader, setSubagentLoader, subscribeRemoteTasks, withSubagentCards, type TasksHandle } from "../../client/tasks/data";
 import { REMOTE_RETRY_MS, awayNotice, boardHosts, hostMethods, hostNotice, mergeHostTasks, readHostApis, useMergedTasks, useRemoteReadFailures, useRemoteTasks, routedPaseo, scopedId, stampCard, unscopeId, type BoardHosts, type FailedHost, type HostSummary, type RemoteTasks } from "../../client/tasks/data/hosts";
-import { EMPTY_FILTERS, LANE_ORDER, remoteCard, type LaneId, type LaneModel, type TaskCard } from "../../client/tasks/model";
+import { EMPTY_FILTERS, LANE_ORDER, remoteCard, translationAgentOf, type LaneId, type LaneModel, type TaskCard } from "../../client/tasks/model";
 import { sampleCards } from "../../client/tasks/sample-cards";
 import { activeChips, buildFilterOptions, clearedParams } from "../../client/tasks/board/filter-options";
 import { EMPTY_PARAMS, activeFilterCount, decodeBoardParams, encodeBoardParams, resolveBoardParams } from "../../client/tasks/board/params";
@@ -388,6 +388,15 @@ describe("remote store", () => {
       release();
       vi.useRealTimers();
     }
+  });
+});
+
+describe("translationAgentOf", () => {
+  it("translates with the card's agent, a subtask's parent, and never with another host's", () => {
+    const card = sampleCards(Date.parse("2026-10-20T12:00:00Z"))[0]!;
+    expect(translationAgentOf(card)).toBe(card.id);
+    expect(translationAgentOf({ ...card, subagent: { subtitle: null }, parent: { ...card.parent!, id: "parent" } as TaskCard["parent"] })).toBe("parent");
+    expect(translationAgentOf(stampCard(card, { id: "srv-remote", label: "remote-box", remote: true }))).toBeUndefined();
   });
 });
 

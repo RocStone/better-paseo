@@ -3,7 +3,7 @@ import { ActivityIndicator, Keyboard, Platform, Pressable, View } from "react-na
 import type { PluginTheme } from "@getpaseo/plugin";
 import { Icon, Modal, ScrollView, TextInput } from "@getpaseo/plugin/client/ui";
 import { questionRequestKey, type QuestionDialogState, type QuestionDialogStore } from "../actions/question-dialog";
-import type { TaskCard } from "../model";
+import { translationAgentOf, type TaskCard } from "../model";
 import { questionAnswers, questionDraftSupported, questionFormSupported, questionTextInput } from "../question-form";
 import { TaskText as Text, TasksTypography, HOST_FONT as F, HOST_LINE, taskControlHeight, useTasksFontScale } from "../typography";
 import { cardStrings } from "./strings";
@@ -75,7 +75,7 @@ export function TaskInlineQuestions(props: { card: TaskCard; source: QuestionDia
 function QuestionDialogBody(props: Parameters<typeof TaskQuestionDialog>[0] & { state: QuestionDialogState; inline?: boolean; context?: { context: QuestionContext; retry(): void } | null }) {
   const state = props.state;
   const card = props.cardById(state.agentId);
-  const translationAgentId = card ? card.subagent ? card.parent?.id : card.id : undefined;
+  const translationAgentId = card ? translationAgentOf(card) : undefined;
   // The dialog reads the note itself; the details pass theirs in.
   const ownContext = useQuestionContext(props.inline ? undefined : props.paseo, state.agentId, state.permission);
   const [index, setIndex] = useState(0);
